@@ -1,0 +1,13 @@
+{
+  "_comment": "Avatar gallery for the Editor's driver-photo picker. Add a PNG (real alpha transparency — not just a checkerboard-patterned background, that won't render transparent) into this folder, then add its filename here so it shows up as a choice. Order here is the order shown in the picker.",
+  "_excluded": "racer-white-jump.png is still here but left out of this list on purpose: its suit is white, same as the checkerboard's background squares, so automated background removal couldn't tell them apart and mangled it. Re-add it if you get a cleanly-cut version.",
+  "avatars": [
+    "racer-red.png",
+    "racer-blue-blonde.png",
+    "racer-blue-brunette.png",
+    "racer-blue-crouch.png",
+    "racer-orange.png",
+    "racer-purple.png",
+    "racer-black.png"
+  ]
+}

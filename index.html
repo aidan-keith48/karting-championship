@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apex Karting League</title>
+  <meta name="description" content="A go-karting championship, run F1-style. Fastest lap wins." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Titillium+Web:ital,wght@0,300;0,400;0,600;0,700;0,900;1,600;1,700;1,900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <link rel="stylesheet" href="assets/css/editor.css" />
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"></div>
+
+  <main id="app">
+    <!-- HERO -->
+    <header class="hero">
+      <div class="hero-inner">
+        <p id="season-eyebrow" class="eyebrow">SEASON</p>
+        <h1 id="champ-title" class="wordmark">CHAMPIONSHIP</h1>
+        <p id="champ-tagline" class="tagline"></p>
+        <div class="ledges">
+          <div id="leader-ledge" class="ledge"></div>
+          <div id="fl-ledge" class="ledge"></div>
+        </div>
+      </div>
+    </header>
+
+    <div id="draft-indicator" class="draft-indicator" hidden></div>
+
+    <!-- TABS -->
+    <nav class="tabs" role="tablist" aria-label="Championship views">
+      <button class="tab active" data-panel="panel-standings" role="tab">Standings</button>
+      <button class="tab" data-panel="panel-rounds" role="tab">Rounds</button>
+      <button class="tab" data-panel="panel-drivers" role="tab">Drivers</button>
+      <button class="tab" data-panel="panel-editor" role="tab">Editor</button>
+    </nav>
+
+    <!-- STANDINGS -->
+    <section id="panel-standings" class="panel active" role="tabpanel">
+      <div id="podium" class="podium"></div>
+      <div class="standings">
+        <div class="standings-head">
+          <span>POS</span><span></span><span></span><span>DRIVER</span>
+          <span class="h-stat">RND</span><span class="h-stat">WIN</span>
+          <span class="h-stat">BEST</span><span class="h-pts">PTS</span>
+        </div>
+        <div id="standings-body"></div>
+      </div>
+    </section>
+
+    <!-- ROUNDS -->
+    <section id="panel-rounds" class="panel" role="tabpanel">
+      <div id="rounds" class="rounds"></div>
+    </section>
+
+    <!-- DRIVERS -->
+    <section id="panel-drivers" class="panel" role="tabpanel">
+      <p class="grid-hint">Tap a driver for their poster.</p>
+      <div id="drivers-grid" class="drivers-grid"></div>
+    </section>
+
+    <!-- EDITOR -->
+    <section id="panel-editor" class="panel" role="tabpanel">
+      <div id="editor-draft-banner" class="editor-banner" hidden></div>
+
+      <nav class="editor-subtabs" role="tablist" aria-label="Editor sections">
+        <button class="editor-subtab active" data-sub="drivers" type="button">Drivers</button>
+        <button class="editor-subtab" data-sub="tracks" type="button">Tracks</button>
+        <button class="editor-subtab" data-sub="rounds" type="button">Races</button>
+      </nav>
+
+      <!-- DRIVERS EDITOR -->
+      <div id="editor-drivers-section" class="editor-section active">
+        <form id="editor-driver-form" class="editor-form" novalidate>
+          <input type="hidden" id="ed-editing-id" value="" />
+          <div class="ef-grid">
+            <label class="field span2">Name<input type="text" id="ed-name" required placeholder="Alex Carter" /></label>
+            <label class="field">Driver ID<input type="text" id="ed-id" placeholder="carter" /><small>Auto-filled from name. Change only if you need to.</small></label>
+            <label class="field">Abbreviation<input type="text" id="ed-abbr" maxlength="3" placeholder="CAR" /></label>
+            <label class="field">Race number<input type="number" id="ed-number" min="0" required placeholder="4" /></label>
+            <label class="field">Team<input type="text" id="ed-team" required placeholder="Apex Racing" /></label>
+            <label class="field">Accent colour<input type="color" id="ed-color" value="#e10600" /></label>
+            <label class="field span2">Quote<input type="text" id="ed-quote" placeholder="Shown on their poster" /></label>
+
+            <label class="field">Country<input type="text" id="ed-country" placeholder="United Kingdom" /></label>
+            <label class="field">Country code<input type="text" id="ed-country-code" maxlength="2" placeholder="GB" /><small><span id="ed-flag-preview"></span></small></label>
+            <label class="field">Age<input type="number" id="ed-age" min="0" /></label>
+            <label class="field">Height (cm)<input type="number" id="ed-height" min="0" /></label>
+            <label class="field">Weight (kg)<input type="number" id="ed-weight" min="0" /></label>
+            <label class="field">Driving style<input type="text" id="ed-style" placeholder="Late braker" /></label>
+
+            <div class="field span2">
+              Avatar
+              <div id="ed-avatar-gallery" class="ef-avatar-gallery" role="radiogroup" aria-label="Choose an avatar"></div>
+              <small>Pick a face from <code>assets/drivers/</code>. Want more choices? Drop a PNG (transparent background works best — it overlays on the driver's number) into that folder and add its filename to <code>assets/drivers/manifest.json</code>.</small>
+            </div>
+            <label class="field span2">…or a photo path instead<input type="text" id="ed-photo" placeholder="assets/drivers/racer-red.png" /><small>Only needed if you'd rather point at a file yourself instead of picking one above.</small></label>
+            <div class="field span2 ef-photo-preview" id="ed-photo-preview"></div>
+          </div>
+
+          <fieldset class="ef-stats">
+            <legend>Attributes (0–99)</legend>
+            <div class="ef-stats-grid">
+              <label class="field">Pace<input type="range" id="ed-stat-pace" min="0" max="99" value="70" /></label>
+              <label class="field">Racecraft<input type="range" id="ed-stat-racecraft" min="0" max="99" value="70" /></label>
+              <label class="field">Awareness<input type="range" id="ed-stat-awareness" min="0" max="99" value="70" /></label>
+              <label class="field">Experience<input type="range" id="ed-stat-experience" min="0" max="99" value="70" /></label>
+            </div>
+            <div id="ed-stats-preview" class="ef-stats-preview"></div>
+          </fieldset>
+
+          <div class="ef-actions">
+            <button type="submit" class="ef-btn primary">Save driver</button>
+            <button type="button" class="ef-btn" id="ed-cancel">New driver / cancel edit</button>
+          </div>
+          <p class="ef-error" id="ed-error" hidden></p>
+        </form>
+        <ul id="editor-driver-list" class="editor-list"></ul>
+      </div>
+
+      <!-- TRACKS EDITOR -->
+      <div id="editor-tracks-section" class="editor-section">
+        <form id="editor-track-form" class="editor-form" novalidate>
+          <input type="hidden" id="et-editing-id" value="" />
+          <div class="ef-grid">
+            <label class="field span2">Track name<input type="text" id="et-name" required placeholder="TeamSport Circuit" /></label>
+            <label class="field">Track ID<input type="text" id="et-id" placeholder="teamsport" /><small>Auto-filled from name.</small></label>
+          </div>
+
+          <fieldset class="ef-layouts">
+            <legend>Layouts <small>the track's own layout changes often — keep a running list here</small></legend>
+            <div id="et-layouts-list" class="ef-layouts-list"></div>
+            <div class="ef-grid">
+              <label class="field">New layout name<input type="text" id="et-layout-name" placeholder="Reverse Club Loop" /></label>
+              <label class="field">Upload a drawing<input type="file" id="et-layout-file" accept="image/*" /><small>Embedded directly — no file to manage.</small></label>
+              <label class="field">…or an image path instead<input type="text" id="et-layout-image" placeholder="assets/tracks/r4-layout.png" /></label>
+            </div>
+            <button type="button" class="ef-btn" id="et-layout-add">Add layout</button>
+          </fieldset>
+
+          <div class="ef-actions">
+            <button type="submit" class="ef-btn primary">Save track</button>
+            <button type="button" class="ef-btn" id="et-cancel">New track / cancel edit</button>
+          </div>
+          <p class="ef-error" id="et-error" hidden></p>
+        </form>
+        <ul id="editor-track-list" class="editor-list"></ul>
+      </div>
+
+      <!-- ROUNDS EDITOR -->
+      <div id="editor-rounds-section" class="editor-section">
+        <form id="editor-round-form" class="editor-form" novalidate>
+          <input type="hidden" id="er-editing-id" value="" />
+          <div class="ef-grid">
+            <label class="field span2">Race name<input type="text" id="er-name" required placeholder="Summer Showdown" /></label>
+            <label class="field">Date<input type="date" id="er-date" required /></label>
+            <label class="field">Time<input type="time" id="er-time" /></label>
+            <label class="field">Track<select id="er-track"><option value="">— add a track first —</option></select></label>
+            <label class="field" id="er-layout-field">Layout<select id="er-layout"></select></label>
+          </div>
+
+          <fieldset class="ef-attendance">
+            <legend>Who raced <small>tick attended, then fill in their lap + kart</small></legend>
+            <div id="er-attendance-list" class="ef-attendance-list"></div>
+          </fieldset>
+
+          <div class="ef-actions">
+            <button type="submit" class="ef-btn primary">Save race</button>
+            <button type="button" class="ef-btn" id="er-cancel">New race / cancel edit</button>
+          </div>
+          <p class="ef-error" id="er-error" hidden></p>
+        </form>
+        <ul id="editor-round-list" class="editor-list"></ul>
+      </div>
+
+      <!-- EXPORT / IMPORT / DRAFT -->
+      <div class="editor-export-bar">
+        <div class="eeb-group">
+          <button type="button" class="ef-btn primary" id="editor-save-file">Save to file…</button>
+          <button type="button" class="ef-btn" id="editor-download">Download season.json</button>
+          <button type="button" class="ef-btn" id="editor-import">Import JSON…</button>
+          <input type="file" id="editor-import-input" accept="application/json" hidden />
+        </div>
+        <div class="eeb-group">
+          <span id="editor-draft-status" class="eeb-status"></span>
+          <button type="button" class="ef-btn ghost" id="editor-clear-draft">Clear local draft</button>
+        </div>
+      </div>
+    </section>
+
+    <footer class="site-foot">
+      <span>Fastest lap sets the grid. Points on the F1 curve.</span>
+    </footer>
+  </main>
+
+  <!-- POSTER MODAL -->
+  <div id="poster-modal" class="poster-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Driver poster">
+    <button id="poster-close" class="poster-close" aria-label="Close">✕</button>
+    <div id="poster-stage" class="poster"></div>
+  </div>
+
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/editor.js" defer></script>
+</body>
+</html>

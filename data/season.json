@@ -1,0 +1,19 @@
+{
+  "championship": "APEX KARTING LEAGUE",
+  "season": "2025",
+  "tagline": "Fastest lap wins. Everything else is negotiable.",
+  "scoring": {
+    "_comment": "points[0] = 1st place, points[1] = 2nd, etc. Add or remove values to change how many positions score. Anyone finishing outside this list scores 0.",
+    "points": [25, 18, 15, 12, 10, 8, 6, 4, 2, 1],
+    "fastestLapBadge": true
+  },
+  "physics": {
+    "_comment": "Weight math: every extra weightStepKg over the lightest driver in the field costs penaltySec on a lap. Default here is the classic karting rule of thumb: +10kg = +0.1s/lap. Set refWeightKg to a fixed number (e.g. the kart's minimum ballast weight) instead of null if you'd rather compare everyone to that instead of the lightest driver.",
+    "weightStepKg": 10,
+    "penaltySec": 0.1,
+    "refWeightKg": null
+  },
+  "drivers": [],
+  "tracks": [],
+  "rounds": []
+}
