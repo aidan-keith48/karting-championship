@@ -1,16 +1,17 @@
 # Apex Karting League
 
-A static, F1-style championship board for a go-karting friend group. One file drives
-everything — `data/season.json` — and the site recomputes the standings, podium,
-per-round results and driver posters automatically. No backend, no build step, no
-database. Perfect for GitHub Pages.
+A static, F1-style championship board for a go-karting friend group. The site itself is
+still plain HTML/CSS/JS with no build step, hosted on GitHub Pages — but drivers, tracks
+and races now live in **Firestore** (Firebase's database) instead of a hand-edited JSON
+file, so an edit made in the **Editor** tab is visible to every visitor immediately, not
+just after a manual export/commit.
 
-You don't have to hand-edit that JSON, though: open the site and click the **Editor**
-tab. It's a form — matching the rest of the site — for adding/editing drivers, tracks
-and races, and it produces an updated `season.json` you drop back into `data/`. See
-[Using the Editor tab](#using-the-editor-tab) below. The manual-JSON instructions that
-follow are still here as reference for exactly what the editor produces (and as a
-fallback if you'd rather just type it by hand).
+Reading the standings/rounds/drivers is open to anyone. Editing requires signing in with
+an allowlisted Google account — see [The Editor tab](#the-editor-tab) below. The data
+shapes described below (driver/track/round fields) are still exactly what the Editor's
+forms produce; they're just Firestore documents now instead of JSON array entries.
+`data/season.json` still exists as an optional backup/seed format — see
+[Backup & restore](#backup--restore).
 
 ---
 
@@ -34,9 +35,12 @@ the standings after the previous one.
 
 ---
 
-## Editing the season (the only file you touch)
+## Data model
 
-Open `data/season.json`.
+These are the fields the Editor tab's forms save — each becomes one Firestore document
+(a `drivers/{id}`, `tracks/{id}`, or `rounds/{id}` doc). You normally never touch this by
+hand; it's documented here so you know what a Download backup / Import restore file
+(`season.json`) looks like, and what each field is for.
 
 ### Add a driver
 Only `id`, `name`, `abbr`, `number`, `team` and `color` are required — everything
@@ -171,44 +175,76 @@ to score? Make the array longer. Example (top-5 only):
 
 ---
 
-## Using the Editor tab
+## The Editor tab
 
-Open the site and click **Editor**. Three sections — Drivers, Tracks, Races — each
-with a form (matching the site's look) and a list of what you've already added, with
-Edit/Delete on every item.
+Open the site and click **Editor**.
 
-- **You see what you add, right away.** Standings/Rounds/Drivers update live as you
-  edit — a banner appears under the hero whenever you're looking at that local data
-  ("Showing local Editor data… unpublished, only visible in this browser") so it's
-  always clear it's a draft. Nobody else sees it until you export and swap the file
-  in. Edits also autosave to this browser only, so a refresh or an accidental
-  tab-close doesn't lose work — reopening the Editor tab offers to restore that draft.
+- **Sign in with Google** (top of the panel) using an allowlisted account. Without
+  signing in you can still browse the driver/track/race lists, but the forms stay
+  hidden — there's nothing to edit until you're signed in as someone on the allowlist.
+  Signed in with a Google account that *isn't* allowlisted? You'll see a message asking
+  you to use an allowlisted account instead; ask whoever manages the project to add you
+  (see [The Firebase project](#the-firebase-project) below).
+- Three sections once you're in — Drivers, Tracks, Races — each with a form (matching
+  the site's look) and a list of what's already there, with Edit/Delete on every item.
+- **Saved = live, everywhere, immediately.** There's no export/import/publish step —
+  hitting Save writes straight to Firestore, and every open copy of the site (yours,
+  a friend's, on any device) updates within moments. This also means two people editing
+  the same thing at once is a real possibility (last write wins) — rare for a small
+  group, but worth knowing.
 - **Driver avatars are a picker, not an upload** — see [Driver avatars](#add-a-driver)
   above. **Track layout drawings** still need a file: either upload one (it gets
-  embedded directly in the exported `season.json`, no separate file to manage) or
-  point at a path you're keeping in `assets/tracks/` yourself.
-- **When you're ready, use the export bar at the bottom:**
-  - **Save to file…** (Chrome/Edge) — pick `data/season.json` once, and every click
-    after that writes straight back to it.
-  - **Download season.json** — works everywhere; downloads the file, and you move it
-    into `data/season.json` yourself.
-  - **Import JSON…** to load an existing `season.json` back in and keep editing it
-    later, on this or another browser.
+  embedded directly in that track's document, no separate file to manage) or point at
+  a path you're keeping in `assets/tracks/` yourself.
 - Deleting a driver/track/layout that's still used by a race will ask you to confirm
   and then cleans up the reference for you rather than leaving something dangling.
+
+## Backup & restore
+
+The export bar at the bottom of the Editor:
+- **Download backup (season.json)** — always available, even signed out. Snapshots
+  everything currently in Firestore into a `season.json` file, in the same shape
+  described above. Good for an occasional off-site backup.
+- **Restore from backup…** — signed in only. Loads a `season.json` file (one you
+  downloaded earlier, or hand-wrote) and batch-writes its drivers/tracks/rounds/config
+  into Firestore. Useful for bulk-loading an initial roster in one shot, or recovering
+  from a mistake.
+
+## The Firebase project
+
+Data lives in a Firestore database (project `apexkarting-f9b86`). Two things live in
+the repo and need to stay in sync with each other and with the Firebase console:
+
+- **`assets/js/firebase-config.js`** — the project's web config (not secret) and
+  `EDITOR_ALLOWLIST`, a client-side copy of who can edit, used only to drive the
+  Editor's UI (show/hide forms).
+- **`firestore.rules`** — the actual security boundary. Public read, write restricted
+  to the same email list, enforced server-side. Paste this into the Firebase console
+  under **Firestore Database → Rules** whenever it changes.
+
+To add or remove an editor: add/remove their Google account email in **both** files,
+then republish `firestore.rules` in the console.
+
+One-time setup already done for this project: Firestore enabled, Authentication →
+Google sign-in provider enabled. If you ever redeploy under a new Firebase project,
+also add your GitHub Pages domain under **Authentication → Settings → Authorized
+domains** — without it, Google Sign-In will fail on the live site (localhost works
+without any extra config).
 
 ---
 
 ## Preview it locally
 
-Because the page reads `season.json`, you can't just double-click `index.html`
-(browsers block reading local files over `file://`). Serve it instead:
+Because the page loads Firebase via ES module `<script>` tags, you can't just
+double-click `index.html` (browsers block module scripts over `file://`). Serve it
+instead:
 
 ```bash
 cd karting-championship
 python3 -m http.server 8000
 ```
-Then open <http://localhost:8000>. Any static server works.
+Then open <http://localhost:8000>. Any static server works. This talks to the real
+Firebase project (reads are public; edits still need an allowlisted sign-in).
 
 ---
 
@@ -218,21 +254,23 @@ Then open <http://localhost:8000>. Any static server works.
 2. Repo **Settings → Pages**.
 3. **Source:** Deploy from a branch → `main` → `/ (root)` → Save.
 4. Wait a minute; your board is live at `https://<you>.github.io/<repo>/`.
-
-On GitHub Pages the files are served over HTTPS, so `season.json` loads fine — no server
-setup needed.
+5. Add that domain under Firebase **Authentication → Settings → Authorized domains**
+   (see [The Firebase project](#the-firebase-project)) so Google Sign-In works there too.
 
 ---
 
 ## Files
 
 ```
-index.html             page shell (tabs + poster modal + editor panel)
-assets/css/style.css   the racing theme
-assets/css/editor.css  Editor tab styling
-assets/js/app.js       scoring engine + rendering (public tabs)
-assets/js/editor.js    Editor tab logic (forms, export/import, autosave)
-assets/drivers/        driver avatars + manifest.json (the Editor's picker gallery)
-assets/tracks/         track layout drawings — drop scans/photos here
-data/season.json       ← what you're ultimately editing, by hand or via the Editor tab
+index.html                    page shell (tabs + poster modal + editor panel)
+assets/css/style.css          the racing theme
+assets/css/editor.css         Editor tab styling
+assets/js/firebase-config.js  Firebase project config + editor allowlist (UI copy)
+assets/js/firebase-init.js    Firebase bootstrap (auth + Firestore, exposed on window)
+assets/js/app.js              scoring engine + rendering, reads Firestore live
+assets/js/editor.js           Editor tab logic (forms, Firestore writes, auth gating)
+assets/drivers/               driver avatars + manifest.json (the Editor's picker gallery)
+assets/tracks/                track layout drawings — drop scans/photos here
+firestore.rules               security rules (the real access control)
+data/season.json              optional backup/seed format — not read at runtime
 ```

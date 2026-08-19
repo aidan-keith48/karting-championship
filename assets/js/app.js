@@ -1,7 +1,8 @@
 /* ============================================================
    APEX KARTING LEAGUE — championship engine
    Vanilla JS. No dependencies. No build step.
-   Reads data/season.json (or window.SEASON_DATA for offline preview).
+   Reads live from Firestore (window.db/window.fb, set up by
+   firebase-init.js) — see initFirestoreListeners() below.
    ============================================================ */
 
 /* ---------- lap-time helpers ---------- */
@@ -65,30 +66,14 @@ function formatDelta(ms) {
   return `${sign}${Math.abs(ms / 1000).toFixed(2)}s`;
 }
 
-/* ---------- data loading ---------- */
-
-// Same key editor.js autosaves the in-progress Editor draft under. Reading
-// it here means the public tabs show whatever's been added in the Editor —
-// even before it's been exported to data/season.json — so "I added a driver
-// but can't see it anywhere" isn't a thing. It's still per-browser only:
-// nobody else sees it until you actually export and replace the file.
-// var (not const) so it's guaranteed to land on window, the same way the
-// plain `function` declarations below do — editor.js (a separate <script>)
-// reads this by name too, and cross-script `const` sharing, while spec-legal,
-// is a subtler mechanism than "it's just a global" to depend on here.
-var EDITOR_DRAFT_KEY = "apexkarting.editorDraft.v1";
-
-function readEditorDraft() {
-  try {
-    const raw = localStorage.getItem(EDITOR_DRAFT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed && parsed.schemaVersion === 1 && parsed.state) return parsed;
-  } catch (e) {
-    /* corrupt draft — ignore, fall back to the real file */
-  }
-  return null;
-}
+/* ---------- data loading (Firestore, live) ----------
+   data/season.json is no longer fetched at runtime — Firestore is the
+   source of truth, kept live via onSnapshot listeners so an allowlisted
+   edit in the Editor (in ANY browser) shows up here immediately, not just
+   after an export/import/commit cycle. window.db/window.fb come from
+   firebase-init.js (a <script type="module">, loaded before this file's
+   DOMContentLoaded-triggered init() ever runs — see that file's header
+   comment for why the ordering is safe). */
 
 // Standings/movement are computed by walking data.rounds in array order, so
 // an out-of-order edit (manual or via the Editor tab) would silently corrupt
@@ -107,17 +92,102 @@ function sortRoundsByDate(data) {
   return data;
 }
 
-async function loadData() {
-  const draft = readEditorDraft();
-  if (draft) return sortRoundsByDate(draft.state);
+// Defaults for the config/season doc, matching the old season.json shape.
+// Used in-memory if that doc doesn't exist yet — editor.js seeds it for
+// real (see ensureConfigDoc there) once an allowlisted user opens the
+// Editor tab, so a brand-new project needs no manual Firestore setup.
+// var (not const), same reasoning as the old EDITOR_DRAFT_KEY it replaces —
+// guaranteed to land on window so editor.js can read it by name too.
+var DEFAULT_CONFIG = {
+  championship: "APEX KARTING LEAGUE",
+  season: "",
+  tagline: "",
+  scoring: { points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapBadge: true },
+  physics: { weightStepKg: 10, penaltySec: 0.1, refWeightKg: null },
+};
 
-  const data = window.SEASON_DATA
-    ? window.SEASON_DATA // offline / inlined preview
-    : await fetch("data/season.json", { cache: "no-store" }).then((res) => {
-        if (!res.ok) throw new Error(`season.json returned ${res.status}`);
-        return res.json();
-      });
-  return sortRoundsByDate(data);
+// Latest snapshot of each Firestore source, assembled into the same
+// season-shaped object the rest of this file (and editor.js) already
+// expects. `ready` gates the first render until all four have reported at
+// least once — Firestore's onSnapshot fires almost immediately even
+// offline (served from its local cache), so this is a brief gate, not a
+// real wait.
+const FS = {
+  config: null,
+  drivers: [],
+  tracks: [],
+  rounds: [],
+  ready: { config: false, drivers: false, tracks: false, rounds: false },
+  offline: false,
+};
+
+function currentDataFromFirestore() {
+  return sortRoundsByDate({
+    ...DEFAULT_CONFIG,
+    ...(FS.config || {}),
+    drivers: FS.drivers,
+    tracks: FS.tracks,
+    rounds: FS.rounds.map((r) => ({ ...r })),
+  });
+}
+
+let firstRenderDone = false;
+
+function rebuildAndRender() {
+  if (!(FS.ready.config && FS.ready.drivers && FS.ready.tracks && FS.ready.rounds)) return;
+  renderPublicViews(currentDataFromFirestore());
+  renderConnectionStatus(FS.offline);
+  if (!firstRenderDone) {
+    firstRenderDone = true;
+    $("#app").classList.add("ready");
+  }
+  // Lets editor.js refresh its own list views (driver/track/round lists,
+  // dropdowns) whenever the underlying data changes, from any source —
+  // this browser's own edit, or someone else's, live.
+  window.dispatchEvent(new CustomEvent("apex-data-changed"));
+}
+
+function initFirestoreListeners() {
+  if (!window.db || !window.fb) {
+    showError("Firebase failed to load — check your connection and reload.");
+    return;
+  }
+  const { doc, collection, onSnapshot } = window.fb;
+  const db = window.db;
+
+  const onErr = (name) => (err) => {
+    console.error(`${name} listener failed`, err);
+    FS.ready[name] = true;
+    rebuildAndRender();
+  };
+
+  onSnapshot(
+    doc(db, "config", "season"),
+    (snap) => {
+      FS.config = snap.exists() ? snap.data() : DEFAULT_CONFIG;
+      FS.offline = snap.metadata.fromCache;
+      FS.ready.config = true;
+      rebuildAndRender();
+    },
+    onErr("config")
+  );
+
+  [
+    ["drivers", (arr) => (FS.drivers = arr)],
+    ["tracks", (arr) => (FS.tracks = arr)],
+    ["rounds", (arr) => (FS.rounds = arr)],
+  ].forEach(([name, assign]) => {
+    onSnapshot(
+      collection(db, name),
+      (snap) => {
+        assign(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        FS.offline = FS.offline || snap.metadata.fromCache;
+        FS.ready[name] = true;
+        rebuildAndRender();
+      },
+      onErr(name)
+    );
+  });
 }
 
 /* ---------- championship maths ---------- */
@@ -277,9 +347,13 @@ function buildChampionship(data) {
 
 // The last data/champ rendered — kept so the poster modal (opened via
 // event delegation, long after the initial render) always uses whatever's
-// currently on screen, not a stale copy from page load.
-let currentData = null;
-let currentChamp = null;
+// currently on screen, not a stale copy from page load. editor.js reads
+// currentData directly (e.g. for its delete/rename referential-integrity
+// checks) instead of keeping its own copy — one live source of truth. var
+// (not let), same reasoning as DEFAULT_CONFIG/EDITOR_DRAFT_KEY before it —
+// guaranteed to land on window for cross-script use.
+var currentData = null;
+var currentChamp = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, html) => {
@@ -680,20 +754,17 @@ function showError(msg) {
     <div class="fatal">
       <h2>Standings couldn't load</h2>
       <p>${escapeHtml(msg)}</p>
-      <p class="fatal-hint">If you opened <code>index.html</code> by double-clicking it, your browser blocks reading <code>season.json</code> from disk. Serve it instead:</p>
+      <p class="fatal-hint">If you opened <code>index.html</code> by double-clicking it, your browser blocks the Firebase module scripts from loading over <code>file://</code>. Serve it instead:</p>
       <pre>cd karting-championship
 python3 -m http.server 8000</pre>
       <p class="fatal-hint">then open <code>http://localhost:8000</code>. On GitHub Pages this just works — no server needed.</p>
     </div>`;
 }
 
-// Renders every public tab from a season-shaped data object. Editor.js calls
-// this directly (passing its own in-memory draft, isDraft=true) so adding a
-// driver/track/race shows up immediately, without waiting on localStorage or
-// a page reload. `isDraft` controls the "you're viewing local data" banner;
-// when omitted (plain page load) it's inferred from whether loadData() found
-// a saved Editor draft.
-function renderPublicViews(data, isDraft) {
+// Renders every public tab from a season-shaped data object. Called by
+// rebuildAndRender() whenever any Firestore listener fires, so a change
+// (from the Editor, in any browser) shows up here live.
+function renderPublicViews(data) {
   const champ = buildChampionship(data);
   currentData = data;
   currentChamp = champ;
@@ -703,34 +774,27 @@ function renderPublicViews(data, isDraft) {
   renderStandings(data, champ);
   renderRounds(data);
   renderDrivers(data, champ);
-  renderDraftIndicator(data, typeof isDraft === "boolean" ? isDraft : !!readEditorDraft());
 }
 
-function renderDraftIndicator(data, isDraft) {
+// Repurposed from the old localStorage-draft indicator: now surfaces when
+// Firestore is serving cached data instead of a live server connection.
+function renderConnectionStatus(offline) {
   const bar = $("#draft-indicator");
   if (!bar) return;
-  if (!isDraft) {
+  if (!offline) {
     bar.hidden = true;
     bar.innerHTML = "";
     return;
   }
-  const n = (data.drivers || []).length;
-  const m = (data.rounds || []).length;
   bar.hidden = false;
-  bar.innerHTML = `Showing local Editor data (${n} driver${n === 1 ? "" : "s"} · ${m} race${
-    m === 1 ? "" : "s"
-  }) — unpublished, only visible in this browser. <button type="button" id="draft-indicator-jump">Open Editor</button> · export when ready to publish it for everyone else.`;
-  const jump = $("#draft-indicator-jump");
-  if (jump) jump.addEventListener("click", () => $('.tab[data-panel="panel-editor"]').click());
+  bar.textContent = "Offline — showing the last data received from the server.";
 }
 
-async function init() {
+function init() {
   try {
-    const data = await loadData();
-    renderPublicViews(data);
+    initFirestoreListeners();
     wireTabs();
     wirePosters();
-    $("#app").classList.add("ready");
   } catch (err) {
     console.error(err);
     showError(err.message || String(err));

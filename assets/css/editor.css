@@ -4,7 +4,7 @@
    (colors, fonts, --skew) so the Editor tab looks native to the site.
    ============================================================ */
 
-/* ---------- public-tab "you're viewing local draft data" banner ---------- */
+/* ---------- public-tab "offline, showing cached data" banner ---------- */
 .draft-indicator {
   margin-top: 20px;
   padding: 10px 16px;
@@ -28,20 +28,34 @@
   padding: 0;
 }
 
-.editor-banner {
+/* ---------- Editor auth bar ---------- */
+.editor-auth-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   background: linear-gradient(180deg, var(--carbon-2), var(--carbon));
   border: 1px solid var(--line-2);
   border-left: 4px solid var(--violet);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--smoke);
+}
+.editor-auth-bar #editor-auth-status { flex: 1; min-width: 200px; }
+
+.editor-gate-msg {
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon));
+  border: 1px solid var(--line-2);
+  border-left: 4px solid #ff5a5a;
   border-radius: 10px;
   padding: 12px 16px;
   margin-bottom: 16px;
   font-size: 13px;
   color: var(--smoke);
 }
+.editor-gate-msg strong { color: var(--chalk); }
 
 .editor-subtabs {
   display: flex;

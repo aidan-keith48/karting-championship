@@ -1,18 +1,30 @@
 /* ============================================================
    APEX KARTING LEAGUE — data editor
-   Vanilla JS, no dependencies. Lives entirely client-side: edits an
-   in-memory draft (seeded from data/season.json), autosaves that draft
-   to localStorage as a safety net, and lets you export it back out as
-   season.json. It never writes to the public tabs or the real file on
-   disk by itself — Standings/Rounds/Drivers only ever read the fetched
-   data/season.json, so there's no ambiguity about what's "published".
-   Reuses app.js's globals (photoMarkup, flagEmoji, statsMarkup, parseLap,
-   resolveTrackLayout, layoutImageMarkup, renderPublicViews, EDITOR_DRAFT_KEY)
-   since both files share one global scope by this codebase's no-module
-   convention. Every mutation calls syncPublicView(), which persists the
-   draft AND pushes it straight into the public Standings/Rounds/Drivers
-   tabs — so adding/editing something here shows up immediately, not just
-   after a reload or an export.
+   Vanilla JS, no dependencies. Every mutation writes straight to
+   Firestore (setDoc/deleteDoc/writeBatch, via window.db/window.fb
+   from firebase-init.js) — there is no local draft anymore.
+   app.js's own Firestore listeners pick up the change and re-render
+   the public tabs automatically, in this browser AND everyone
+   else's, so there's no explicit "push to public view" step left
+   to call.
+
+   List views here (driver/track/round lists, the round form's
+   track/layout dropdowns) read directly from `currentData` — the
+   same live cache app.js already maintains — instead of a separate
+   cloned copy, and refresh on the 'apex-data-changed' event app.js
+   dispatches after every render. Only the form *currently being
+   filled in* is local, ephemeral UI state (cleared on submit/cancel,
+   same as before).
+
+   Editing is gated behind Google Sign-In + an email allowlist
+   (window.isAllowlisted, from firebase-config.js's EDITOR_ALLOWLIST)
+   — enforced for real by firestore.rules, mirrored here only for UI
+   (hide/disable forms, show a sign-in prompt instead).
+
+   Reuses app.js's globals (photoMarkup, flagEmoji, statsMarkup,
+   parseLap, resolveTrackLayout, layoutImageMarkup, currentData,
+   escapeHtml) since both files share one global scope by this
+   codebase's no-module convention.
    ============================================================ */
 
 (function () {
@@ -20,16 +32,14 @@
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-  const clone = (o) => (typeof structuredClone === "function" ? structuredClone(o) : JSON.parse(JSON.stringify(o)));
 
-  let editorState = null;
   let initialized = false;
-  let activeFileHandle = null; // File System Access API handle — not serialized, not persisted
   let driverIdTouched = false;
   let trackIdTouched = false;
   let draftLayouts = []; // layouts of the track currently being composed in the track form
   let avatarManifest = []; // filenames listed in assets/drivers/manifest.json
   let flashTimer = null;
+  let configSeeded = false;
 
   /* ---------- small utils ---------- */
 
@@ -51,11 +61,8 @@
     }
     return id;
   }
-  // escapeHtml is defined in app.js (loaded first) and reused here, same as
-  // photoMarkup/flagEmoji/statsMarkup/parseLap — one shared global scope.
-  function fmtTime(ts) {
-    return new Date(ts).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-  }
+  // escapeHtml/currentData are defined in app.js (loaded first) and reused
+  // here, same as photoMarkup/flagEmoji/statsMarkup/parseLap.
   function formError(el, msg) {
     if (el) {
       el.hidden = false;
@@ -68,11 +75,29 @@
     el.hidden = true;
     el.textContent = "";
   }
+  function flashStatus(msg) {
+    const el = $("#editor-sync-status");
+    if (!el) return;
+    el.textContent = msg;
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => (el.textContent = ""), 3000);
+  }
+
+  function drivers() {
+    return (currentData && currentData.drivers) || [];
+  }
+  function tracks() {
+    return (currentData && currentData.tracks) || [];
+  }
+  function rounds() {
+    return (currentData && currentData.rounds) || [];
+  }
 
   // Downscales+recompresses an uploaded image client-side before turning it
-  // into a data: URI, so an embedded avatar/layout drawing stays a few tens
-  // of KB (fine for season.json and localStorage) instead of the several MB
-  // a phone photo would otherwise be.
+  // into a data: URI, so an embedded track-layout drawing stays a few tens
+  // of KB (well under Firestore's 1MB document limit) instead of the
+  // several MB a phone photo would otherwise be. Driver avatars don't use
+  // this — they're picked from the curated assets/drivers/ gallery instead.
   function resizeImageToDataUri(file, maxDim, quality) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -118,156 +143,125 @@
     }
   }
 
-  /* ---------- state ---------- */
+  /* ---------- auth gating ---------- */
 
-  function emptySeason() {
-    return {
-      championship: "APEX KARTING LEAGUE",
-      season: "",
-      tagline: "",
-      scoring: { points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapBadge: true },
-      physics: { weightStepKg: 10, penaltySec: 0.1, refWeightKg: null },
-      drivers: [],
-      tracks: [],
-      rounds: [],
-    };
-  }
-  function normalizeState() {
-    if (!Array.isArray(editorState.drivers)) editorState.drivers = [];
-    if (!Array.isArray(editorState.tracks)) editorState.tracks = [];
-    if (!Array.isArray(editorState.rounds)) editorState.rounds = [];
+  function isAuthed() {
+    return !!(window.currentUser && window.isAllowlisted(window.currentUser.email));
   }
 
-  async function ensureState() {
-    if (editorState) return editorState;
+  function updateAuthUI() {
+    const user = window.currentUser;
+    const statusEl = $("#editor-auth-status");
+    const signinBtn = $("#editor-signin");
+    const signoutBtn = $("#editor-signout");
+    const gateMsg = $("#editor-gate-msg");
 
-    let draft = null;
-    const draftRaw = localStorage.getItem(EDITOR_DRAFT_KEY);
-    if (draftRaw) {
-      try {
-        const parsed = JSON.parse(draftRaw);
-        if (parsed && parsed.schemaVersion === 1 && parsed.state) draft = parsed;
-      } catch (e) {
-        /* corrupt draft — ignore, treat as absent */
-      }
+    if (!user) {
+      statusEl.textContent = "Not signed in — you can browse, but editing needs an allowlisted Google account.";
+      signinBtn.hidden = false;
+      signoutBtn.hidden = true;
+      gateMsg.hidden = true;
+    } else if (isAuthed()) {
+      statusEl.textContent = `Signed in as ${user.email}.`;
+      signinBtn.hidden = true;
+      signoutBtn.hidden = false;
+      gateMsg.hidden = true;
+    } else {
+      statusEl.textContent = `Signed in as ${user.email}.`;
+      signinBtn.hidden = true;
+      signoutBtn.hidden = false;
+      $("#editor-gate-email").textContent = user.email;
+      gateMsg.hidden = false;
     }
 
-    let fetched = null;
-    try {
-      const res = await fetch("data/season.json", { cache: "no-store" });
-      if (res.ok) fetched = await res.json();
-    } catch (e) {
-      /* offline or missing — fall back to an empty skeleton below */
-    }
-
-    editorState = fetched ? clone(fetched) : emptySeason();
-    normalizeState();
-
-    if (draft) showDraftBanner(draft);
-    return editorState;
-  }
-
-  function showDraftBanner(draft) {
-    const banner = $("#editor-draft-banner");
-    banner.hidden = false;
-    banner.innerHTML = `
-      <span>Unsaved local draft found from ${fmtTime(draft.savedAt)}.</span>
-      <button type="button" class="ef-btn small primary" id="editor-restore-draft">Restore draft</button>
-      <button type="button" class="ef-btn small ghost" id="editor-discard-draft">Discard, start from season.json</button>`;
-    $("#editor-restore-draft").addEventListener("click", () => {
-      editorState = clone(draft.state);
-      normalizeState();
-      banner.hidden = true;
-      renderAllEditorSections();
-      if (typeof renderPublicViews === "function") renderPublicViews(editorState, true);
+    const authed = isAuthed();
+    $$(".editor-needs-auth").forEach((el) => {
+      el.hidden = !authed;
+      if (el.tagName === "INPUT" || el.tagName === "BUTTON" || el.tagName === "SELECT") el.disabled = !authed;
     });
-    $("#editor-discard-draft").addEventListener("click", () => {
-      localStorage.removeItem(EDITOR_DRAFT_KEY);
-      banner.hidden = true;
-      if (typeof renderPublicViews === "function") renderPublicViews(editorState, false);
-    });
-  }
+    renderDriverList();
+    renderTrackList();
+    renderRoundList();
 
-  // Writes the autosave safety net to localStorage. Immediate, no debounce —
-  // every call site here is a discrete action (submit/delete/import), never
-  // a raw keystroke, so there's nothing to coalesce.
-  function persistDraft() {
-    try {
-      localStorage.setItem(EDITOR_DRAFT_KEY, JSON.stringify({ schemaVersion: 1, savedAt: Date.now(), state: editorState }));
-      updateDraftStatus();
-    } catch (e) {
-      /* storage full/unavailable — not fatal, the in-memory draft still works this session */
+    if (authed && !configSeeded) {
+      configSeeded = true;
+      ensureConfigDoc().catch((err) => console.error("config seed failed", err));
     }
   }
 
-  // The one call every mutating action should make: persist the safety net
-  // AND push the change into the public tabs immediately.
-  function syncPublicView() {
-    persistDraft();
-    if (typeof renderPublicViews === "function") renderPublicViews(editorState, true);
+  // Creates config/season with sane defaults if it doesn't exist yet — only
+  // attempted once signed in as an allowlisted user, since firestore.rules
+  // requires that to write. A brand-new project needs no manual Firestore
+  // setup beyond what's already been done.
+  async function ensureConfigDoc() {
+    const ref = window.fb.doc(window.db, "config", "season");
+    const snap = await window.fb.getDoc(ref);
+    if (!snap.exists()) await window.fb.setDoc(ref, DEFAULT_CONFIG);
   }
 
-  function updateDraftStatus() {
-    const raw = localStorage.getItem(EDITOR_DRAFT_KEY);
-    const statusEl = $("#editor-draft-status");
-    if (!raw) {
-      statusEl.textContent = "No local draft.";
-      return;
-    }
-    try {
-      statusEl.textContent = `Draft autosaved ${fmtTime(JSON.parse(raw).savedAt)}.`;
-    } catch (e) {
-      statusEl.textContent = "";
-    }
-  }
-  function flashStatus(msg) {
-    $("#editor-draft-status").textContent = msg;
-    if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(updateDraftStatus, 3000);
+  function requireAuthed(errEl) {
+    if (isAuthed()) return true;
+    formError(errEl, "Sign in with an allowlisted Google account to save changes.");
+    return false;
   }
 
-  /* ---------- cascading id updates ---------- */
+  /* ---------- cascading id updates (Firestore batch writes) ---------- */
 
-  function cascadeRenameDriver(oldId, newId) {
-    editorState.rounds.forEach((r) => {
-      (r.laps || []).forEach((l) => {
-        if (l.driver === oldId) l.driver = newId;
-      });
-      if (r.attendees) r.attendees = r.attendees.map((a) => (a === oldId ? newId : a));
+  async function cascadeRenameDriverFS(oldId, newId) {
+    const affected = rounds().filter(
+      (r) => (r.laps || []).some((l) => l.driver === oldId) || (r.attendees || []).includes(oldId)
+    );
+    if (!affected.length) return;
+    const batch = window.fb.writeBatch(window.db);
+    affected.forEach((r) => {
+      const updated = { ...r };
+      updated.laps = (r.laps || []).map((l) => (l.driver === oldId ? { ...l, driver: newId } : l));
+      if (r.attendees) updated.attendees = r.attendees.map((a) => (a === oldId ? newId : a));
+      batch.set(window.fb.doc(window.db, "rounds", r.id), updated);
     });
+    await batch.commit();
   }
-  function cascadeRenameTrack(oldId, newId) {
-    editorState.rounds.forEach((r) => {
-      if (r.trackId === oldId) r.trackId = newId;
+
+  async function cascadeRenameTrackFS(oldId, newId) {
+    const affected = rounds().filter((r) => r.trackId === oldId);
+    if (!affected.length) return;
+    const batch = window.fb.writeBatch(window.db);
+    affected.forEach((r) => {
+      batch.set(window.fb.doc(window.db, "rounds", r.id), { ...r, trackId: newId });
     });
+    await batch.commit();
   }
 
   /* ---------- driver list + form ---------- */
 
   function renderDriverList() {
     const ul = $("#editor-driver-list");
-    ul.innerHTML = "";
-    if (!editorState.drivers.length) {
+    if (!drivers().length) {
       ul.innerHTML = '<li class="ef-empty">No drivers yet — add one above.</li>';
       return;
     }
-    editorState.drivers.forEach((d) => {
-      const flag = flagEmoji(d.countryCode);
-      const li = document.createElement("li");
-      li.className = "editor-item";
-      li.style.setProperty("--accent", d.color || "#e10600");
-      li.innerHTML = `
-        ${photoMarkup(d, "chip-photo")}
-        <span class="editor-item-body">
-          <span class="editor-item-title">${escapeHtml(d.name)}${flag ? ` ${flag}` : ""}</span>
-          <span class="editor-item-sub">#${d.number ?? "—"} · ${escapeHtml(d.team || "")}</span>
-        </span>
-        <span class="editor-item-actions">
-          <button type="button" class="ef-btn small" data-act="edit-driver" data-id="${d.id}">Edit</button>
-          <button type="button" class="ef-btn small ghost" data-act="delete-driver" data-id="${d.id}">Delete</button>
-        </span>`;
-      ul.appendChild(li);
-    });
+    const authed = isAuthed();
+    ul.innerHTML = drivers()
+      .map((d) => {
+        const flag = flagEmoji(d.countryCode);
+        return `
+        <li class="editor-item" style="--accent:${escapeHtml(d.color || "#e10600")}">
+          ${photoMarkup(d, "chip-photo")}
+          <span class="editor-item-body">
+            <span class="editor-item-title">${escapeHtml(d.name)}${flag ? ` ${flag}` : ""}</span>
+            <span class="editor-item-sub">#${d.number ?? "—"} · ${escapeHtml(d.team || "")}</span>
+          </span>
+          ${
+            authed
+              ? `<span class="editor-item-actions">
+                  <button type="button" class="ef-btn small" data-act="edit-driver" data-id="${escapeHtml(d.id)}">Edit</button>
+                  <button type="button" class="ef-btn small ghost" data-act="delete-driver" data-id="${escapeHtml(d.id)}">Delete</button>
+                </span>`
+              : ""
+          }
+        </li>`;
+      })
+      .join("");
   }
 
   function updatePhotoPreview() {
@@ -350,10 +344,11 @@
     clearFormError($("#ed-error"));
   }
 
-  function handleDriverSubmit(e) {
+  async function handleDriverSubmit(e) {
     e.preventDefault();
     const errEl = $("#ed-error");
     clearFormError(errEl);
+    if (!requireAuthed(errEl)) return;
 
     const name = $("#ed-name").value.trim();
     const numberVal = $("#ed-number").value;
@@ -362,7 +357,9 @@
     if (!name || numberVal === "" || !team) return formError(errEl, "Name, race number and team are required.");
 
     const editingId = $("#ed-editing-id").value;
-    const existingIds = editorState.drivers.map((d) => d.id).filter((x) => x !== editingId);
+    const existingIds = drivers()
+      .map((d) => d.id)
+      .filter((x) => x !== editingId);
     const id = uniqueId(slugify($("#ed-id").value || name), existingIds);
 
     const driver = { id, name, number: Number(numberVal), team, color };
@@ -390,68 +387,77 @@
       experience: Number($("#ed-stat-experience").value),
     };
 
-    if (editingId) {
-      const idx = editorState.drivers.findIndex((d) => d.id === editingId);
-      if (idx !== -1) {
-        if (editingId !== id) cascadeRenameDriver(editingId, id);
-        editorState.drivers[idx] = driver;
+    try {
+      if (editingId && editingId !== id) {
+        await cascadeRenameDriverFS(editingId, id);
+        await window.fb.deleteDoc(window.fb.doc(window.db, "drivers", editingId));
       }
-    } else {
-      editorState.drivers.push(driver);
+      await window.fb.setDoc(window.fb.doc(window.db, "drivers", id), driver);
+      flashStatus("Driver saved.");
+      clearDriverForm();
+    } catch (err) {
+      console.error(err);
+      formError(errEl, "Save failed: " + (err.message || err));
     }
-    syncPublicView();
-    renderDriverList();
-    renderRoundList();
-    renderAttendanceRows(); // roster changed — refresh the round form's attendance rows too
-    clearDriverForm();
   }
 
-  function deleteDriver(id) {
-    const referencing = editorState.rounds.filter(
-      (r) => (r.laps || []).some((l) => l.driver === id) || (r.attendees || []).includes(id)
-    );
+  async function deleteDriver(id) {
+    const referencing = rounds().filter((r) => (r.laps || []).some((l) => l.driver === id) || (r.attendees || []).includes(id));
     if (referencing.length) {
       const names = referencing.map((r) => r.name || r.id).join(", ");
       if (!confirm(`This driver appears in ${referencing.length} race(s): ${names}. Delete them and remove from those races?`)) return;
-      referencing.forEach((r) => {
-        r.laps = (r.laps || []).filter((l) => l.driver !== id);
-        if (r.attendees) r.attendees = r.attendees.filter((a) => a !== id);
-      });
     } else if (!confirm("Delete this driver?")) {
       return;
     }
-    editorState.drivers = editorState.drivers.filter((d) => d.id !== id);
-    syncPublicView();
-    renderDriverList();
-    renderRoundList();
-    renderAttendanceRows();
-    if ($("#ed-editing-id").value === id) clearDriverForm();
+    try {
+      if (referencing.length) {
+        const batch = window.fb.writeBatch(window.db);
+        referencing.forEach((r) => {
+          const updated = { ...r };
+          updated.laps = (r.laps || []).filter((l) => l.driver !== id);
+          if (r.attendees) updated.attendees = r.attendees.filter((a) => a !== id);
+          batch.set(window.fb.doc(window.db, "rounds", r.id), updated);
+        });
+        await batch.commit();
+      }
+      await window.fb.deleteDoc(window.fb.doc(window.db, "drivers", id));
+      flashStatus("Driver deleted.");
+      if ($("#ed-editing-id").value === id) clearDriverForm();
+    } catch (err) {
+      console.error(err);
+      alert("Delete failed: " + (err.message || err));
+    }
   }
 
   /* ---------- track list + form ---------- */
 
   function renderTrackList() {
     const ul = $("#editor-track-list");
-    ul.innerHTML = "";
-    if (!editorState.tracks.length) {
+    if (!tracks().length) {
       ul.innerHTML = '<li class="ef-empty">No tracks yet — add one above.</li>';
       return;
     }
-    editorState.tracks.forEach((t) => {
-      const count = (t.layouts || []).length;
-      const li = document.createElement("li");
-      li.className = "editor-item";
-      li.innerHTML = `
-        <span class="editor-item-body">
-          <span class="editor-item-title">${escapeHtml(t.name)}</span>
-          <span class="editor-item-sub">${count} layout${count === 1 ? "" : "s"}</span>
-        </span>
-        <span class="editor-item-actions">
-          <button type="button" class="ef-btn small" data-act="edit-track" data-id="${t.id}">Edit</button>
-          <button type="button" class="ef-btn small ghost" data-act="delete-track" data-id="${t.id}">Delete</button>
-        </span>`;
-      ul.appendChild(li);
-    });
+    const authed = isAuthed();
+    ul.innerHTML = tracks()
+      .map((t) => {
+        const count = (t.layouts || []).length;
+        return `
+        <li class="editor-item">
+          <span class="editor-item-body">
+            <span class="editor-item-title">${escapeHtml(t.name)}</span>
+            <span class="editor-item-sub">${count} layout${count === 1 ? "" : "s"}</span>
+          </span>
+          ${
+            authed
+              ? `<span class="editor-item-actions">
+                  <button type="button" class="ef-btn small" data-act="edit-track" data-id="${escapeHtml(t.id)}">Edit</button>
+                  <button type="button" class="ef-btn small ghost" data-act="delete-track" data-id="${escapeHtml(t.id)}">Delete</button>
+                </span>`
+              : ""
+          }
+        </li>`;
+      })
+      .join("");
   }
 
   function renderTrackLayoutsEditor() {
@@ -488,7 +494,10 @@
       }
     }
 
-    const id = uniqueId(slugify(name), draftLayouts.map((l) => l.id));
+    const id = uniqueId(
+      slugify(name),
+      draftLayouts.map((l) => l.id)
+    );
     draftLayouts.push({ id, name, ...(image ? { image } : {}) });
     $("#et-layout-name").value = "";
     $("#et-layout-image").value = "";
@@ -504,20 +513,30 @@
     if (!isNaN(i) && field && draftLayouts[i]) draftLayouts[i][field] = t.value;
   }
 
-  function handleLayoutRemoveClick(e) {
+  async function handleLayoutRemoveClick(e) {
     const btn = e.target.closest(".ef-layout-remove");
     if (!btn) return;
     const i = Number(btn.dataset.i);
     const layout = draftLayouts[i];
     const trackId = $("#et-editing-id").value;
     if (trackId && layout) {
-      const referencing = editorState.rounds.filter((r) => r.trackId === trackId && r.layoutId === layout.id);
+      const referencing = rounds().filter((r) => r.trackId === trackId && r.layoutId === layout.id);
       if (referencing.length) {
         const names = referencing.map((r) => r.name || r.id).join(", ");
         if (!confirm(`This layout is used by ${referencing.length} race(s): ${names}. Remove it and unassign from those races?`)) return;
-        referencing.forEach((r) => delete r.layoutId);
-        syncPublicView();
-        renderRoundList();
+        try {
+          const batch = window.fb.writeBatch(window.db);
+          referencing.forEach((r) => {
+            const updated = { ...r };
+            delete updated.layoutId;
+            batch.set(window.fb.doc(window.db, "rounds", r.id), updated);
+          });
+          await batch.commit();
+        } catch (err) {
+          console.error(err);
+          alert("Couldn't unassign that layout from affected races: " + (err.message || err));
+          return;
+        }
       }
     }
     draftLayouts.splice(i, 1);
@@ -545,98 +564,114 @@
     clearFormError($("#et-error"));
   }
 
-  function handleTrackSubmit(e) {
+  async function handleTrackSubmit(e) {
     e.preventDefault();
     const errEl = $("#et-error");
     clearFormError(errEl);
+    if (!requireAuthed(errEl)) return;
     const name = $("#et-name").value.trim();
     if (!name) return formError(errEl, "Track name is required.");
 
     const editingId = $("#et-editing-id").value;
-    const existingIds = editorState.tracks.map((t) => t.id).filter((x) => x !== editingId);
+    const existingIds = tracks()
+      .map((t) => t.id)
+      .filter((x) => x !== editingId);
     const id = uniqueId(slugify($("#et-id").value || name), existingIds);
     const track = { id, name, layouts: draftLayouts.map((l) => ({ ...l })) };
 
-    if (editingId) {
-      const idx = editorState.tracks.findIndex((t) => t.id === editingId);
-      if (idx !== -1) {
-        if (editingId !== id) cascadeRenameTrack(editingId, id);
-        editorState.tracks[idx] = track;
+    try {
+      if (editingId && editingId !== id) {
+        await cascadeRenameTrackFS(editingId, id);
+        await window.fb.deleteDoc(window.fb.doc(window.db, "tracks", editingId));
       }
-    } else {
-      editorState.tracks.push(track);
+      await window.fb.setDoc(window.fb.doc(window.db, "tracks", id), track);
+      flashStatus("Track saved.");
+      clearTrackForm();
+    } catch (err) {
+      console.error(err);
+      formError(errEl, "Save failed: " + (err.message || err));
     }
-    syncPublicView();
-    renderTrackList();
-    renderRoundList();
-    renderRoundTrackOptions();
-    clearTrackForm();
   }
 
-  function deleteTrack(id) {
-    const referencing = editorState.rounds.filter((r) => r.trackId === id);
+  async function deleteTrack(id) {
+    const referencing = rounds().filter((r) => r.trackId === id);
     if (referencing.length) {
       const names = referencing.map((r) => r.name || r.id).join(", ");
       if (!confirm(`This track is used by ${referencing.length} race(s): ${names}. Delete it and unassign from those races?`)) return;
-      referencing.forEach((r) => {
-        delete r.trackId;
-        delete r.layoutId;
-      });
     } else if (!confirm("Delete this track?")) {
       return;
     }
-    editorState.tracks = editorState.tracks.filter((t) => t.id !== id);
-    syncPublicView();
-    renderTrackList();
-    renderRoundList();
-    renderRoundTrackOptions();
-    if ($("#et-editing-id").value === id) clearTrackForm();
+    try {
+      if (referencing.length) {
+        const batch = window.fb.writeBatch(window.db);
+        referencing.forEach((r) => {
+          const updated = { ...r };
+          delete updated.trackId;
+          delete updated.layoutId;
+          batch.set(window.fb.doc(window.db, "rounds", r.id), updated);
+        });
+        await batch.commit();
+      }
+      await window.fb.deleteDoc(window.fb.doc(window.db, "tracks", id));
+      flashStatus("Track deleted.");
+      if ($("#et-editing-id").value === id) clearTrackForm();
+    } catch (err) {
+      console.error(err);
+      alert("Delete failed: " + (err.message || err));
+    }
   }
 
   /* ---------- round list + form ---------- */
 
   function renderRoundList() {
     const ul = $("#editor-round-list");
-    ul.innerHTML = "";
-    if (!editorState.rounds.length) {
+    if (!rounds().length) {
       ul.innerHTML = '<li class="ef-empty">No races yet — add one above.</li>';
       return;
     }
-    const sorted = editorState.rounds.slice().sort((a, b) => ((a.date || "") < (b.date || "") ? 1 : -1));
-    sorted.forEach((r) => {
-      const { trackName, layoutName } = resolveTrackLayout(editorState, r);
-      const count = (r.laps || []).length;
-      const li = document.createElement("li");
-      li.className = "editor-item";
-      li.innerHTML = `
-        <span class="editor-item-body">
-          <span class="editor-item-title">${escapeHtml(r.name)}</span>
-          <span class="editor-item-sub">${[r.date, trackName, layoutName].filter(Boolean).map(escapeHtml).join(" · ")} · ${count} driver${
-        count === 1 ? "" : "s"
-      }</span>
-        </span>
-        <span class="editor-item-actions">
-          <button type="button" class="ef-btn small" data-act="edit-round" data-id="${r.id}">Edit</button>
-          <button type="button" class="ef-btn small ghost" data-act="delete-round" data-id="${r.id}">Delete</button>
-        </span>`;
-      ul.appendChild(li);
-    });
+    const authed = isAuthed();
+    const sorted = rounds()
+      .slice()
+      .sort((a, b) => ((a.date || "") < (b.date || "") ? 1 : -1));
+    ul.innerHTML = sorted
+      .map((r) => {
+        const { trackName, layoutName } = resolveTrackLayout(currentData, r);
+        const count = (r.laps || []).length;
+        return `
+        <li class="editor-item">
+          <span class="editor-item-body">
+            <span class="editor-item-title">${escapeHtml(r.name)}</span>
+            <span class="editor-item-sub">${[r.date, trackName, layoutName].filter(Boolean).map(escapeHtml).join(" · ")} · ${count} driver${
+          count === 1 ? "" : "s"
+        }</span>
+          </span>
+          ${
+            authed
+              ? `<span class="editor-item-actions">
+                  <button type="button" class="ef-btn small" data-act="edit-round" data-id="${escapeHtml(r.id)}">Edit</button>
+                  <button type="button" class="ef-btn small ghost" data-act="delete-round" data-id="${escapeHtml(r.id)}">Delete</button>
+                </span>`
+              : ""
+          }
+        </li>`;
+      })
+      .join("");
   }
 
   function renderRoundTrackOptions() {
     const sel = $("#er-track");
     const current = sel.value;
-    sel.innerHTML = editorState.tracks.length
-      ? `<option value="">— no track —</option>` + editorState.tracks.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("")
+    sel.innerHTML = tracks().length
+      ? `<option value="">— no track —</option>` + tracks().map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("")
       : `<option value="">— add a track first —</option>`;
-    sel.value = editorState.tracks.some((t) => t.id === current) ? current : "";
+    sel.value = tracks().some((t) => t.id === current) ? current : "";
     renderRoundLayoutOptions(sel.value);
   }
 
   function renderRoundLayoutOptions(trackId, preselectLayoutId) {
     const field = $("#er-layout-field");
     const sel = $("#er-layout");
-    const track = editorState.tracks.find((t) => t.id === trackId);
+    const track = tracks().find((t) => t.id === trackId);
     const layouts = track ? track.layouts || [] : [];
     if (!layouts.length) {
       field.hidden = true;
@@ -645,18 +680,18 @@
     }
     field.hidden = false;
     if (layouts.length === 1) {
-      sel.innerHTML = `<option value="${layouts[0].id}">${escapeHtml(layouts[0].name)}</option>`;
+      sel.innerHTML = `<option value="${escapeHtml(layouts[0].id)}">${escapeHtml(layouts[0].name)}</option>`;
       sel.value = layouts[0].id;
     } else {
       sel.innerHTML =
-        `<option value="">Select layout…</option>` + layouts.map((l) => `<option value="${l.id}">${escapeHtml(l.name)}</option>`).join("");
+        `<option value="">Select layout…</option>` + layouts.map((l) => `<option value="${escapeHtml(l.id)}">${escapeHtml(l.name)}</option>`).join("");
       sel.value = layouts.some((l) => l.id === preselectLayoutId) ? preselectLayoutId : "";
     }
   }
 
   function renderAttendanceRows(round) {
     const wrap = $("#er-attendance-list");
-    if (!editorState.drivers.length) {
+    if (!drivers().length) {
       wrap.innerHTML = '<p class="ef-empty">Add drivers first.</p>';
       return;
     }
@@ -664,12 +699,12 @@
     (round?.laps || []).forEach((l) => (lapsById[l.driver] = l));
     const attendeesOverride = round?.attendees && round.attendees.length ? new Set(round.attendees) : null;
 
-    wrap.innerHTML = editorState.drivers
+    wrap.innerHTML = drivers()
       .map((d) => {
         const lap = lapsById[d.id];
         const attended = !!lap || (attendeesOverride ? attendeesOverride.has(d.id) : false);
         return `
-        <div class="ef-attend-row" data-driver-id="${d.id}">
+        <div class="ef-attend-row" data-driver-id="${escapeHtml(d.id)}">
           <label class="ef-attend-check">
             <input type="checkbox" class="ef-attend-toggle" ${attended ? "checked" : ""} />
             <span style="--accent:${escapeHtml(d.color)}">${escapeHtml(d.name)}</span>
@@ -687,6 +722,37 @@
     if (!e.target.classList.contains("ef-attend-toggle")) return;
     const fields = e.target.closest(".ef-attend-row").querySelector(".ef-attend-fields");
     fields.hidden = !e.target.checked;
+  }
+
+  // Re-renders the attendance list from live data (e.g. a driver was just
+  // added/removed elsewhere) without discarding whatever's already been
+  // ticked/typed into the round form — otherwise adding a driver while
+  // mid-way through building a race would silently wipe that progress.
+  function refreshAttendanceRowsPreservingInput() {
+    const list = $("#er-attendance-list");
+    if (!list) return;
+    const preserved = {};
+    $$(".ef-attend-row", list).forEach((row) => {
+      preserved[row.dataset.driverId] = {
+        checked: row.querySelector(".ef-attend-toggle").checked,
+        kart: row.querySelector(".ef-attend-kart").value,
+        time: row.querySelector(".ef-attend-time").value,
+      };
+    });
+    const editingId = $("#er-editing-id").value;
+    const round = editingId ? rounds().find((r) => r.id === editingId) : null;
+    renderAttendanceRows(round);
+    $$(".ef-attend-row", list).forEach((row) => {
+      const prev = preserved[row.dataset.driverId];
+      if (!prev) return;
+      const toggle = row.querySelector(".ef-attend-toggle");
+      if (prev.checked && !toggle.checked) {
+        toggle.checked = true;
+        row.querySelector(".ef-attend-fields").hidden = false;
+      }
+      if (prev.kart) row.querySelector(".ef-attend-kart").value = prev.kart;
+      if (prev.time) row.querySelector(".ef-attend-time").value = prev.time;
+    });
   }
 
   function fillRoundForm(r) {
@@ -710,10 +776,11 @@
     clearFormError($("#er-error"));
   }
 
-  function handleRoundSubmit(e) {
+  async function handleRoundSubmit(e) {
     e.preventDefault();
     const errEl = $("#er-error");
     clearFormError(errEl);
+    if (!requireAuthed(errEl)) return;
 
     const name = $("#er-name").value.trim();
     const date = $("#er-date").value;
@@ -746,12 +813,12 @@
       }
     });
     if (badDriver) {
-      const d = editorState.drivers.find((x) => x.id === badDriver);
+      const d = drivers().find((x) => x.id === badDriver);
       return formError(errEl, `Lap time for ${d ? d.name : badDriver} doesn't look right (try 00:42.318).`);
     }
 
     const editingId = $("#er-editing-id").value;
-    const id = editingId || uniqueId(slugify(name), editorState.rounds.map((r) => r.id));
+    const id = editingId || uniqueId(slugify(name), rounds().map((r) => r.id));
 
     const round = { id, name, date };
     if (time) round.time = time;
@@ -760,37 +827,51 @@
     round.laps = laps;
     if (hasUntimed) round.attendees = allAttended;
 
-    if (editingId) {
-      const idx = editorState.rounds.findIndex((r) => r.id === editingId);
-      if (idx !== -1) editorState.rounds[idx] = round;
-    } else {
-      editorState.rounds.push(round);
+    try {
+      await window.fb.setDoc(window.fb.doc(window.db, "rounds", id), round);
+      flashStatus("Race saved.");
+      clearRoundForm();
+    } catch (err) {
+      console.error(err);
+      formError(errEl, "Save failed: " + (err.message || err));
     }
-    syncPublicView();
-    renderRoundList();
-    clearRoundForm();
   }
 
-  function deleteRound(id) {
+  async function deleteRound(id) {
     if (!confirm("Delete this race?")) return;
-    editorState.rounds = editorState.rounds.filter((r) => r.id !== id);
-    syncPublicView();
-    renderRoundList();
-    if ($("#er-editing-id").value === id) clearRoundForm();
+    try {
+      await window.fb.deleteDoc(window.fb.doc(window.db, "rounds", id));
+      flashStatus("Race deleted.");
+      if ($("#er-editing-id").value === id) clearRoundForm();
+    } catch (err) {
+      console.error(err);
+      alert("Delete failed: " + (err.message || err));
+    }
   }
 
-  /* ---------- export / import ---------- */
+  /* ---------- backup export / restore ---------- */
 
   function sortedForExport() {
-    const out = clone(editorState);
-    out.rounds = (out.rounds || []).slice().sort((a, b) => {
-      const da = a.date || "",
-        db = b.date || "";
-      if (da !== db) return da < db ? -1 : 1;
-      const ta = a.time || "",
-        tb = b.time || "";
-      return ta < tb ? -1 : ta > tb ? 1 : 0;
-    });
+    const data = currentData || { drivers: [], tracks: [], rounds: [] };
+    const out = {
+      championship: data.championship,
+      season: data.season,
+      tagline: data.tagline,
+      scoring: data.scoring,
+      physics: data.physics,
+      drivers: drivers(),
+      tracks: tracks(),
+      rounds: rounds()
+        .slice()
+        .sort((a, b) => {
+          const da = a.date || "",
+            db = b.date || "";
+          if (da !== db) return da < db ? -1 : 1;
+          const ta = a.time || "",
+            tb = b.time || "";
+          return ta < tb ? -1 : ta > tb ? 1 : 0;
+        }),
+    };
     return out;
   }
 
@@ -805,33 +886,16 @@
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    flashStatus("Downloaded season.json.");
+    flashStatus("Downloaded backup.");
   }
 
-  async function editorSaveToFile() {
-    if (!("showSaveFilePicker" in window)) return editorDownload();
-    try {
-      if (!activeFileHandle) {
-        activeFileHandle = await window.showSaveFilePicker({
-          suggestedName: "season.json",
-          types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
-        });
-      }
-      const writable = await activeFileHandle.createWritable();
-      await writable.write(JSON.stringify(sortedForExport(), null, 2));
-      await writable.close();
-      flashStatus("Saved to file.");
-    } catch (err) {
-      if (err && err.name === "AbortError") return; // user cancelled the picker
-      console.error(err);
-      flashStatus("Save failed — downloading instead.");
-      editorDownload();
-    }
-  }
-
-  function handleImportFile(file) {
+  // Batch-writes a season.json-shaped file into Firestore. Useful for
+  // bulk-loading an initial roster in one shot, or restoring a backup —
+  // gated behind the same auth check as everything else.
+  async function handleImportFile(file) {
+    if (!requireAuthed(null)) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       let parsed;
       try {
         parsed = JSON.parse(reader.result);
@@ -842,22 +906,41 @@
         return formError(null, "That doesn't look like a season.json (missing drivers/rounds arrays).");
       }
       if (!Array.isArray(parsed.tracks)) parsed.tracks = [];
-      editorState = clone(parsed);
-      normalizeState();
-      syncPublicView();
-      renderAllEditorSections();
-      flashStatus("Imported.");
+
+      try {
+        const batch = window.fb.writeBatch(window.db);
+        batch.set(window.fb.doc(window.db, "config", "season"), {
+          championship: parsed.championship || DEFAULT_CONFIG.championship,
+          season: parsed.season || "",
+          tagline: parsed.tagline || "",
+          scoring: parsed.scoring || DEFAULT_CONFIG.scoring,
+          physics: parsed.physics || DEFAULT_CONFIG.physics,
+        });
+        parsed.drivers.forEach((d) => batch.set(window.fb.doc(window.db, "drivers", d.id), d));
+        parsed.tracks.forEach((t) => batch.set(window.fb.doc(window.db, "tracks", t.id), t));
+        parsed.rounds.forEach((r) => batch.set(window.fb.doc(window.db, "rounds", r.id), r));
+        await batch.commit();
+        flashStatus("Restored from backup.");
+      } catch (err) {
+        console.error(err);
+        formError(null, "Restore failed: " + (err.message || err));
+      }
     };
     reader.readAsText(file);
   }
 
   /* ---------- wiring ---------- */
 
-  function renderAllEditorSections() {
+  function refreshListsFromData() {
     renderDriverList();
     renderTrackList();
     renderRoundTrackOptions();
     renderRoundList();
+    refreshAttendanceRowsPreservingInput();
+  }
+
+  function renderAllEditorSections() {
+    refreshListsFromData();
     clearDriverForm();
     clearTrackForm();
     clearRoundForm();
@@ -872,6 +955,21 @@
         $(`#editor-${btn.dataset.sub}-section`).classList.add("active");
       });
     });
+  }
+
+  function wireAuthBar() {
+    $("#editor-signin").addEventListener("click", async () => {
+      try {
+        await window.fbSignInWithGoogle();
+      } catch (err) {
+        if (err && err.code === "auth/popup-closed-by-user") return;
+        console.error(err);
+        alert("Sign-in failed: " + (err.message || err));
+      }
+    });
+    $("#editor-signout").addEventListener("click", () => window.fbSignOut());
+    window.addEventListener("fb-auth-changed", updateAuthUI);
+    updateAuthUI();
   }
 
   function wireForms() {
@@ -921,27 +1019,24 @@
     $("#editor-driver-list").addEventListener("click", (e) => {
       const btn = e.target.closest("button[data-act]");
       if (!btn) return;
-      if (btn.dataset.act === "edit-driver") fillDriverForm(editorState.drivers.find((d) => d.id === btn.dataset.id));
+      if (btn.dataset.act === "edit-driver") fillDriverForm(drivers().find((d) => d.id === btn.dataset.id));
       else if (btn.dataset.act === "delete-driver") deleteDriver(btn.dataset.id);
     });
     $("#editor-track-list").addEventListener("click", (e) => {
       const btn = e.target.closest("button[data-act]");
       if (!btn) return;
-      if (btn.dataset.act === "edit-track") fillTrackForm(editorState.tracks.find((t) => t.id === btn.dataset.id));
+      if (btn.dataset.act === "edit-track") fillTrackForm(tracks().find((t) => t.id === btn.dataset.id));
       else if (btn.dataset.act === "delete-track") deleteTrack(btn.dataset.id);
     });
     $("#editor-round-list").addEventListener("click", (e) => {
       const btn = e.target.closest("button[data-act]");
       if (!btn) return;
-      if (btn.dataset.act === "edit-round") fillRoundForm(editorState.rounds.find((r) => r.id === btn.dataset.id));
+      if (btn.dataset.act === "edit-round") fillRoundForm(rounds().find((r) => r.id === btn.dataset.id));
       else if (btn.dataset.act === "delete-round") deleteRound(btn.dataset.id);
     });
   }
 
   function wireExportBar() {
-    const hasFSAccess = "showSaveFilePicker" in window;
-    $("#editor-save-file").hidden = !hasFSAccess;
-    $("#editor-save-file").addEventListener("click", editorSaveToFile);
     $("#editor-download").addEventListener("click", editorDownload);
     $("#editor-import").addEventListener("click", () => $("#editor-import-input").click());
     $("#editor-import-input").addEventListener("change", (e) => {
@@ -949,28 +1044,22 @@
       if (file) handleImportFile(file);
       e.target.value = "";
     });
-    $("#editor-clear-draft").addEventListener("click", () => {
-      localStorage.removeItem(EDITOR_DRAFT_KEY);
-      flashStatus("Local draft cleared.");
-      // Keep showing the current in-progress edits — this only clears the
-      // localStorage safety net, not the work itself.
-      if (typeof renderPublicViews === "function") renderPublicViews(editorState, true);
-    });
-    updateDraftStatus();
   }
 
   async function activateEditor() {
     if (initialized) return;
     initialized = true;
-    await Promise.all([ensureState(), loadAvatarManifest()]);
+    await loadAvatarManifest();
     renderAllEditorSections();
     wireForms();
     wireListActions();
     wireExportBar();
+    window.addEventListener("apex-data-changed", refreshListsFromData);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     wireSubTabs();
+    wireAuthBar();
     const tabBtn = document.querySelector('.tab[data-panel="panel-editor"]');
     if (tabBtn) tabBtn.addEventListener("click", activateEditor);
   });
