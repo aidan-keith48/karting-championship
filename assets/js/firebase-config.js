@@ -20,3 +20,10 @@ export const firebaseConfig = {
 };
 
 export const EDITOR_ALLOWLIST = ["aidannaidoo2801@gmail.com", "mohamadroshan786@gmail.com", "mzshaik1@gmail.com", "daiyaanmanique1@gmail.com"];
+
+// Admins can edit/delete ANY driver profile, not just one they created —
+// everyone else on EDITOR_ALLOWLIST above can only edit their own. Must be
+// a subset of EDITOR_ALLOWLIST (an admin who isn't allowlisted can't sign
+// in to do anything anyway). Keep in sync with firestore.rules by hand,
+// same as EDITOR_ALLOWLIST.
+export const ADMIN_ALLOWLIST = ["aidannaidoo2801@gmail.com", "mzshaik1@gmail.com", "daiyaanmanique1@gmail.com"];

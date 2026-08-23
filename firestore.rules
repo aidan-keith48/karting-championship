@@ -7,11 +7,14 @@ rules_version = '2';
 //  - drivers: allowlisted AND only the driver's own owner (ownerEmail on
 //    the document) may update/delete it, so one person can't edit
 //    another's profile. A driver with no ownerEmail yet is "unclaimed" —
-//    the first allowlisted person to save it becomes its owner.
+//    the first allowlisted person to save it becomes its owner. Admins
+//    (a smaller subset of the allowlist) bypass this and can edit/delete
+//    any driver — for fixing mistakes or setting up someone who hasn't
+//    signed in yet.
 // This list is the actual security boundary — assets/js/firebase-config.js
-// keeps a client-side copy (EDITOR_ALLOWLIST) purely to drive the Editor's
-// UI (hide/disable forms), never trust that copy alone. Keep both in sync
-// by hand.
+// keeps a client-side copy (EDITOR_ALLOWLIST/ADMIN_ALLOWLIST) purely to
+// drive the Editor's UI (hide/disable forms), never trust that copy alone.
+// Keep both files in sync by hand.
 //
 // IMPORTANT: each collection has its OWN match block below (no blanket
 // /{collection}/{id} wildcard) — Firestore combines multiple matching
@@ -27,15 +30,22 @@ service cloud.firestore {
         'mohamadroshan786@gmail.com'
       ];
     }
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email in [
+        'aidannaidoo2801@gmail.com',
+        'mzshaik1@gmail.com',
+        'daiyaanmanique1@gmail.com'
+      ];
+    }
     function isOwner(existing) {
-      return !('ownerEmail' in existing) || existing.ownerEmail == request.auth.token.email;
+      return isAdmin() || !('ownerEmail' in existing) || existing.ownerEmail == request.auth.token.email;
     }
 
     match /drivers/{id} {
       allow read: if true;
-      allow create: if isAllowlisted() && request.resource.data.ownerEmail == request.auth.token.email;
+      allow create: if isAllowlisted() && (isAdmin() || request.resource.data.ownerEmail == request.auth.token.email);
       allow update: if isAllowlisted() && isOwner(resource.data)
-        && request.resource.data.ownerEmail == request.auth.token.email;
+        && (isAdmin() || request.resource.data.ownerEmail == request.auth.token.email);
       allow delete: if isAllowlisted() && isOwner(resource.data);
     }
 

@@ -205,15 +205,19 @@
     return false;
   }
 
-  // A driver profile can only be edited/deleted by whoever created it —
-  // enforced for real by firestore.rules (resource.data.ownerEmail), this
-  // is just the matching client-side check so the UI never even offers an
-  // Edit/Delete button for someone else's driver. A driver with no
-  // ownerEmail yet (pre-existing data) is "unclaimed" — the first
-  // allowlisted person to save it becomes its owner.
+  // A driver profile can only be edited/deleted by whoever created it,
+  // UNLESS you're an admin (window.isAdmin, from ADMIN_ALLOWLIST) — admins
+  // can edit/delete any driver, for fixing typos or setting things up for
+  // someone who hasn't signed in yet. Enforced for real by firestore.rules
+  // (resource.data.ownerEmail + the same admin check), this is just the
+  // matching client-side check so the UI never even offers an Edit/Delete
+  // button it isn't allowed to use. A driver with no ownerEmail yet
+  // (pre-existing data) is "unclaimed" — the first allowlisted person to
+  // save it becomes its owner.
   function isOwnDriver(d) {
     const email = window.currentUser && window.currentUser.email;
-    return !!email && (!d.ownerEmail || d.ownerEmail === email);
+    if (!email) return false;
+    return window.isAdmin(email) || !d.ownerEmail || d.ownerEmail === email;
   }
 
   /* ---------- cascading id updates (Firestore batch writes) ---------- */

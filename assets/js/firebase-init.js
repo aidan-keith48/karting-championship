@@ -40,7 +40,7 @@ import {
   collection,
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
-import { firebaseConfig, EDITOR_ALLOWLIST } from "./firebase-config.js";
+import { firebaseConfig, EDITOR_ALLOWLIST, ADMIN_ALLOWLIST } from "./firebase-config.js";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -61,6 +61,7 @@ window.EDITOR_ALLOWLIST = EDITOR_ALLOWLIST;
 window.fb = { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, writeBatch };
 
 window.isAllowlisted = (email) => !!email && EDITOR_ALLOWLIST.includes(email);
+window.isAdmin = (email) => !!email && ADMIN_ALLOWLIST.includes(email);
 
 window.fbSignInWithGoogle = () => signInWithPopup(auth, provider);
 window.fbSignOut = () => signOut(auth);
