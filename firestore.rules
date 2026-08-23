@@ -1,22 +1,55 @@
 rules_version = '2';
 
 // Apex Karting League — Firestore security rules.
-// Public read (the site itself isn't gated), write restricted to a
-// hardcoded email allowlist reached via Google Sign-In. This list is the
-// actual security boundary — assets/js/firebase-config.js keeps a client-side
-// copy (EDITOR_ALLOWLIST) purely to drive the Editor's UI (hide/disable
-// forms), never trust that copy alone. Keep the two in sync by hand.
+// Public read (the site itself isn't gated). Write access:
+//  - tracks/rounds/config: any allowlisted (signed-in) user — shared,
+//    managed by whoever's running things.
+//  - drivers: allowlisted AND only the driver's own owner (ownerEmail on
+//    the document) may update/delete it, so one person can't edit
+//    another's profile. A driver with no ownerEmail yet is "unclaimed" —
+//    the first allowlisted person to save it becomes its owner.
+// This list is the actual security boundary — assets/js/firebase-config.js
+// keeps a client-side copy (EDITOR_ALLOWLIST) purely to drive the Editor's
+// UI (hide/disable forms), never trust that copy alone. Keep both in sync
+// by hand.
+//
+// IMPORTANT: each collection has its OWN match block below (no blanket
+// /{collection}/{id} wildcard) — Firestore combines multiple matching
+// blocks with OR, so a permissive wildcard alongside the stricter
+// /drivers/{id} block would leak through and defeat the ownership check.
 service cloud.firestore {
   match /databases/{database}/documents {
     function isAllowlisted() {
       return request.auth != null && request.auth.token.email in [
         'aidannaidoo2801@gmail.com',
-        'ktml.dev@gmail.com',
-        'mzshaik1@gmail.com'
+        'mzshaik1@gmail.com',
+        'daiyaanmanique1@gmail.com',
+        'mohamadroshan786@gmail.com'
       ];
     }
+    function isOwner(existing) {
+      return !('ownerEmail' in existing) || existing.ownerEmail == request.auth.token.email;
+    }
 
-    match /{collection}/{id} {
+    match /drivers/{id} {
+      allow read: if true;
+      allow create: if isAllowlisted() && request.resource.data.ownerEmail == request.auth.token.email;
+      allow update: if isAllowlisted() && isOwner(resource.data)
+        && request.resource.data.ownerEmail == request.auth.token.email;
+      allow delete: if isAllowlisted() && isOwner(resource.data);
+    }
+
+    match /tracks/{id} {
+      allow read: if true;
+      allow write: if isAllowlisted();
+    }
+
+    match /rounds/{id} {
+      allow read: if true;
+      allow write: if isAllowlisted();
+    }
+
+    match /config/{id} {
       allow read: if true;
       allow write: if isAllowlisted();
     }

@@ -38,14 +38,14 @@ function formatLap(ms) {
 
 /* ---------- misc helpers ---------- */
 
-// Everything rendered here ultimately comes from data/season.json, which
-// anyone with edit access to the repo (or the Editor tab) can put arbitrary
-// text into — a driver's name, quote, team, etc. Since this is a static site
-// with no server to sanitize on the way in, every such string must be
-// escaped on the way to innerHTML, or a stray "<" turns into stored XSS that
-// runs in every visitor's browser. Used for both HTML text and inside
-// double-quoted attributes (it escapes '"' too, so it also blocks
-// attribute-breakout).
+// Everything rendered here ultimately comes from Firestore, which anyone
+// with edit access (or the Editor tab) can put arbitrary text into — a
+// driver's name, quote, team, etc. Firestore's rules control WHO can write,
+// not WHAT — there's no server-side sanitization of the content itself, so
+// every such string must be escaped on the way to innerHTML, or a stray "<"
+// turns into stored XSS that runs in every visitor's browser. Used for both
+// HTML text and inside double-quoted attributes (it escapes '"' too, so it
+// also blocks attribute-breakout).
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
