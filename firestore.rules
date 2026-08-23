@@ -11,7 +11,8 @@ service cloud.firestore {
     function isAllowlisted() {
       return request.auth != null && request.auth.token.email in [
         'aidannaidoo2801@gmail.com',
-        'ktml.dev@gmail.com'
+        'ktml.dev@gmail.com',
+        'mzshaik1@gmail.com'
       ];
     }
 
