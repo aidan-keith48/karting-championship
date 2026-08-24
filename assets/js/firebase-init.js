@@ -60,7 +60,10 @@ window.EDITOR_ALLOWLIST = EDITOR_ALLOWLIST;
 // scripts and can't `import` these themselves.
 window.fb = { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, writeBatch };
 
-window.isAllowlisted = (email) => !!email && EDITOR_ALLOWLIST.includes(email);
+// Lowercased comparison, matching firestore.rules — Gmail addresses are
+// case-insensitive and Google's reported casing isn't guaranteed stable.
+const editorAllowlistLower = new Set(EDITOR_ALLOWLIST.map((e) => e.toLowerCase()));
+window.isAllowlisted = (email) => !!email && editorAllowlistLower.has(email.toLowerCase());
 
 window.fbSignInWithGoogle = () => signInWithPopup(auth, provider);
 window.fbSignOut = () => signOut(auth);

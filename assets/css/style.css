@@ -155,7 +155,16 @@ body {
   background: linear-gradient(180deg, var(--void) 70%, transparent);
   z-index: 5;
   padding-top: 8px;
+  /* on a narrow phone four tabs can be wider than the viewport — scroll
+     the bar itself instead of letting body's overflow-x:hidden clip the
+     last tab out of reach */
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   appearance: none;
   background: none;
@@ -170,6 +179,8 @@ body {
   cursor: pointer;
   position: relative;
   transition: color 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .tab::after {
   content: "";
@@ -959,6 +970,7 @@ body {
   .standings-head > span:nth-child(6) { display: none; }
   .result-line { grid-template-columns: 30px 6px minmax(0, 1fr) auto auto; }
   .rl-kart { display: none; }
+  .tab { padding: 10px 11px; font-size: 13px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

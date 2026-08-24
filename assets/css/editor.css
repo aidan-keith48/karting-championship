@@ -62,7 +62,12 @@
   gap: 6px;
   margin-bottom: 18px;
   border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+.editor-subtabs::-webkit-scrollbar { display: none; }
 .editor-subtab {
   appearance: none;
   background: none;
@@ -76,6 +81,8 @@
   padding: 10px 14px;
   cursor: pointer;
   position: relative;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .editor-subtab::after {
   content: "";

@@ -19,4 +19,10 @@ export const firebaseConfig = {
   measurementId: "G-EEN3QWSR2K",
 };
 
-export const EDITOR_ALLOWLIST = ["aidannaidoo2801@gmail.com", "ktml.dev@gmail.com", "mzshaik1@gmail.com", "daiyaanmanique1@gmail.com"];
+export const EDITOR_ALLOWLIST = [
+  "aidannaidoo2801@gmail.com",
+  "mzshaik1@gmail.com",
+  "daiyaanmanique1@gmail.com",
+  "mohamadroshan786@gmail.com",
+  "Moimthapelo24@gmail.com",
+];

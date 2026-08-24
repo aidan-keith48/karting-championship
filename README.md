@@ -85,8 +85,9 @@ pixels tall is plenty.
 
 No avatar picked? Leave `photo` out entirely (or just don't pick one in the Editor)
 — everything that shows an avatar falls back to the driver's `abbr` in a circle
-instead. Nothing breaks either way, and you can still set `photo` to a plain path by
-hand if you'd rather manage the file yourself outside the gallery.
+instead. Nothing breaks either way. The Editor's picker is gallery-only (no manual
+path field) — to point a driver at a photo outside `assets/drivers/`, set `photo`
+directly on the Firestore document instead.
 
 ### The weight penalty (and what it means for lap times)
 Real-world kart rule of thumb: extra ballast costs you lap time. `physics` in
