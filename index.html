@@ -83,7 +83,6 @@
 
       <!-- DRIVERS EDITOR -->
       <div id="editor-drivers-section" class="editor-section active">
-        <p class="ef-hint editor-needs-auth">Each driver profile can only be edited by whoever created it.</p>
         <form id="editor-driver-form" class="editor-form editor-needs-auth" novalidate>
           <input type="hidden" id="ed-editing-id" value="" />
           <div class="ef-grid">
@@ -105,6 +104,10 @@
             <div class="field span2">
               Avatar
               <div id="ed-avatar-gallery" class="ef-avatar-gallery" role="radiogroup" aria-label="Choose an avatar"></div>
+              <small>Pick a face from <code>assets/drivers/</code>. Want more choices? Drop a PNG (transparent background works best — it overlays on the driver's number) into that folder and add its filename to <code>assets/drivers/manifest.json</code>.</small>
+            </div>
+            <label class="field span2">…or a photo path instead<input type="text" id="ed-photo" placeholder="assets/drivers/racer-red.png" /><small>Only needed if you'd rather point at a file yourself instead of picking one above.</small></label>
+            <div class="field span2 ef-photo-preview" id="ed-photo-preview"></div>
           </div>
 
           <fieldset class="ef-stats">
@@ -182,7 +185,17 @@
         <ul id="editor-round-list" class="editor-list"></ul>
       </div>
 
-      <p id="editor-sync-status" class="editor-sync-status" aria-live="polite"></p>
+      <!-- EXPORT / IMPORT -->
+      <div class="editor-export-bar">
+        <div class="eeb-group">
+          <button type="button" class="ef-btn" id="editor-download">Download backup (season.json)</button>
+          <button type="button" class="ef-btn editor-needs-auth" id="editor-import">Restore from backup…</button>
+          <input type="file" id="editor-import-input" accept="application/json" hidden />
+        </div>
+        <div class="eeb-group">
+          <span id="editor-sync-status" class="eeb-status"></span>
+        </div>
+      </div>
     </section>
 
     <footer class="site-foot">

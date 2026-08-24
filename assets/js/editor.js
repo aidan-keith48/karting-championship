@@ -205,21 +205,6 @@
     return false;
   }
 
-  // A driver profile can only be edited/deleted by whoever created it,
-  // UNLESS you're an admin (window.isAdmin, from ADMIN_ALLOWLIST) — admins
-  // can edit/delete any driver, for fixing typos or setting things up for
-  // someone who hasn't signed in yet. Enforced for real by firestore.rules
-  // (resource.data.ownerEmail + the same admin check), this is just the
-  // matching client-side check so the UI never even offers an Edit/Delete
-  // button it isn't allowed to use. A driver with no ownerEmail yet
-  // (pre-existing data) is "unclaimed" — the first allowlisted person to
-  // save it becomes its owner.
-  function isOwnDriver(d) {
-    const email = window.currentUser && window.currentUser.email;
-    if (!email) return false;
-    return window.isAdmin(email) || !d.ownerEmail || d.ownerEmail === email;
-  }
-
   /* ---------- cascading id updates (Firestore batch writes) ---------- */
 
   async function cascadeRenameDriverFS(oldId, newId) {
@@ -259,7 +244,6 @@
     ul.innerHTML = drivers()
       .map((d) => {
         const flag = flagEmoji(d.countryCode);
-        const mine = authed && isOwnDriver(d);
         return `
         <li class="editor-item" style="--accent:${escapeHtml(d.color || "#e10600")}">
           ${photoMarkup(d, "chip-photo")}
@@ -268,13 +252,11 @@
             <span class="editor-item-sub">#${d.number ?? "—"} · ${escapeHtml(d.team || "")}</span>
           </span>
           ${
-            mine
+            authed
               ? `<span class="editor-item-actions">
                   <button type="button" class="ef-btn small" data-act="edit-driver" data-id="${escapeHtml(d.id)}">Edit</button>
                   <button type="button" class="ef-btn small ghost" data-act="delete-driver" data-id="${escapeHtml(d.id)}">Delete</button>
                 </span>`
-              : authed && d.ownerEmail
-              ? `<span class="editor-item-owner">Owned by ${escapeHtml(d.ownerEmail)}</span>`
               : ""
           }
         </li>`;
@@ -375,17 +357,12 @@
     if (!name || numberVal === "" || !team) return formError(errEl, "Name, race number and team are required.");
 
     const editingId = $("#ed-editing-id").value;
-    const existingDriver = editingId ? drivers().find((d) => d.id === editingId) : null;
-    if (existingDriver && !isOwnDriver(existingDriver)) {
-      return formError(errEl, "You can only edit your own driver profile.");
-    }
     const existingIds = drivers()
       .map((d) => d.id)
       .filter((x) => x !== editingId);
     const id = uniqueId(slugify($("#ed-id").value || name), existingIds);
 
     const driver = { id, name, number: Number(numberVal), team, color };
-    driver.ownerEmail = (existingDriver && existingDriver.ownerEmail) || window.currentUser.email;
     driver.abbr = ($("#ed-abbr").value.trim() || name.slice(0, 3)).toUpperCase();
     const quote = $("#ed-quote").value.trim();
     if (quote) driver.quote = quote;
@@ -425,11 +402,6 @@
   }
 
   async function deleteDriver(id) {
-    const driver = drivers().find((d) => d.id === id);
-    if (driver && !isOwnDriver(driver)) {
-      alert("You can only delete your own driver profile.");
-      return;
-    }
     const referencing = rounds().filter((r) => (r.laps || []).some((l) => l.driver === id) || (r.attendees || []).includes(id));
     if (referencing.length) {
       const names = referencing.map((r) => r.name || r.id).join(", ");
@@ -877,6 +849,86 @@
     }
   }
 
+  /* ---------- backup export / restore ---------- */
+
+  function sortedForExport() {
+    const data = currentData || { drivers: [], tracks: [], rounds: [] };
+    const out = {
+      championship: data.championship,
+      season: data.season,
+      tagline: data.tagline,
+      scoring: data.scoring,
+      physics: data.physics,
+      drivers: drivers(),
+      tracks: tracks(),
+      rounds: rounds()
+        .slice()
+        .sort((a, b) => {
+          const da = a.date || "",
+            db = b.date || "";
+          if (da !== db) return da < db ? -1 : 1;
+          const ta = a.time || "",
+            tb = b.time || "";
+          return ta < tb ? -1 : ta > tb ? 1 : 0;
+        }),
+    };
+    return out;
+  }
+
+  function editorDownload() {
+    const json = JSON.stringify(sortedForExport(), null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "season.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    flashStatus("Downloaded backup.");
+  }
+
+  // Batch-writes a season.json-shaped file into Firestore. Useful for
+  // bulk-loading an initial roster in one shot, or restoring a backup —
+  // gated behind the same auth check as everything else.
+  async function handleImportFile(file) {
+    if (!requireAuthed(null)) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(reader.result);
+      } catch (err) {
+        return formError(null, "Import failed — not valid JSON: " + err.message);
+      }
+      if (!Array.isArray(parsed.drivers) || !Array.isArray(parsed.rounds)) {
+        return formError(null, "That doesn't look like a season.json (missing drivers/rounds arrays).");
+      }
+      if (!Array.isArray(parsed.tracks)) parsed.tracks = [];
+
+      try {
+        const batch = window.fb.writeBatch(window.db);
+        batch.set(window.fb.doc(window.db, "config", "season"), {
+          championship: parsed.championship || DEFAULT_CONFIG.championship,
+          season: parsed.season || "",
+          tagline: parsed.tagline || "",
+          scoring: parsed.scoring || DEFAULT_CONFIG.scoring,
+          physics: parsed.physics || DEFAULT_CONFIG.physics,
+        });
+        parsed.drivers.forEach((d) => batch.set(window.fb.doc(window.db, "drivers", d.id), d));
+        parsed.tracks.forEach((t) => batch.set(window.fb.doc(window.db, "tracks", t.id), t));
+        parsed.rounds.forEach((r) => batch.set(window.fb.doc(window.db, "rounds", r.id), r));
+        await batch.commit();
+        flashStatus("Restored from backup.");
+      } catch (err) {
+        console.error(err);
+        formError(null, "Restore failed: " + (err.message || err));
+      }
+    };
+    reader.readAsText(file);
+  }
+
   /* ---------- wiring ---------- */
 
   function refreshListsFromData() {
@@ -984,6 +1036,16 @@
     });
   }
 
+  function wireExportBar() {
+    $("#editor-download").addEventListener("click", editorDownload);
+    $("#editor-import").addEventListener("click", () => $("#editor-import-input").click());
+    $("#editor-import-input").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (file) handleImportFile(file);
+      e.target.value = "";
+    });
+  }
+
   async function activateEditor() {
     if (initialized) return;
     initialized = true;
@@ -991,6 +1053,7 @@
     renderAllEditorSections();
     wireForms();
     wireListActions();
+    wireExportBar();
     window.addEventListener("apex-data-changed", refreshListsFromData);
   }
 

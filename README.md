@@ -7,11 +7,11 @@ file, so an edit made in the **Editor** tab is visible to every visitor immediat
 just after a manual export/commit.
 
 Reading the standings/rounds/drivers is open to anyone. Editing requires signing in with
-an allowlisted Google account — see [The Editor tab](#the-editor-tab) below. Track/race
-data is shared and editable by any allowlisted person; a **driver profile can only be
-edited by whoever created it** (see [The Editor tab](#the-editor-tab)). The data shapes
-described below (driver/track/round fields) are still exactly what the Editor's forms
-produce; they're just Firestore documents now, there's no JSON file involved anywhere.
+an allowlisted Google account — see [The Editor tab](#the-editor-tab) below. The data
+shapes described below (driver/track/round fields) are still exactly what the Editor's
+forms produce; they're just Firestore documents now instead of JSON array entries.
+`data/season.json` still exists as an optional backup/seed format — see
+[Backup & restore](#backup--restore).
 
 ---
 
@@ -19,9 +19,9 @@ produce; they're just Firestore documents now, there's no JSON file involved any
 
 1. **Fastest lap sets the grid.** In each round, drivers are ranked by their single
    fastest lap. Quickest = P1, next = P2, and so on.
-2. **Points follow the F1 curve.** Position awards points from `scoring.points` — by
-   default `25, 18, 15, 12, 10, 8, 6, 4, 2, 1`. Anyone finishing outside that list
-   scores 0 for the round. Miss a round entirely = 0 that round.
+2. **Points follow the F1 curve.** Position awards points from `scoring.points` in
+   `season.json` — by default `25, 18, 15, 12, 10, 8, 6, 4, 2, 1`. Anyone finishing
+   outside that list scores 0 for the round. Miss a round entirely = 0 that round.
 3. **Fastest lap badge.** Whoever sets the outright quickest lap of a round gets the
    purple **FL** badge (it's always P1, since position *is* fastest lap).
 4. **Season Fastest Lap trophy.** The single quickest lap set by anyone all year — shown
@@ -39,8 +39,8 @@ the standings after the previous one.
 
 These are the fields the Editor tab's forms save — each becomes one Firestore document
 (a `drivers/{id}`, `tracks/{id}`, or `rounds/{id}` doc). You normally never touch this by
-hand; it's documented here so you know what each field is for, and as a reference if you
-ever do need to edit a document directly in the Firebase console.
+hand; it's documented here so you know what a Download backup / Import restore file
+(`season.json`) looks like, and what each field is for.
 
 ### Add a driver
 Only `id`, `name`, `abbr`, `number`, `team` and `color` are required — everything
@@ -67,8 +67,7 @@ just won't render if left out.
     "racecraft": 79,
     "awareness": 88,
     "experience": 60
-  },
-  "ownerEmail": "nova@example.com"    // set automatically — the only account that can edit this driver
+  }
 }
 ```
 
@@ -90,8 +89,8 @@ instead. Nothing breaks either way, and you can still set `photo` to a plain pat
 hand if you'd rather manage the file yourself outside the gallery.
 
 ### The weight penalty (and what it means for lap times)
-Real-world kart rule of thumb: extra ballast costs you lap time. The `physics` fields
-on the `config/season` document control the maths:
+Real-world kart rule of thumb: extra ballast costs you lap time. `physics` in
+`season.json` controls the maths:
 ```json
 "physics": {
   "weightStepKg": 10,
@@ -99,9 +98,6 @@ on the `config/season` document control the maths:
   "refWeightKg": null
 }
 ```
-There's no form for this in the Editor (it's a set-once-and-forget setting) — change it
-by opening `config/season` directly in the Firebase console's Firestore Database → Data
-tab.
 That's "+10kg = +0.1s/lap" by default. Every driver is compared against a reference
 weight — leave `refWeightKg` as `null` and the **lightest driver in your roster**
 becomes the reference (they show 0 impact, everyone else shows their handicap). Set
@@ -171,10 +167,8 @@ Rounds don't need to be added in date order — the site always sorts by `date`/
 before computing standings, so an out-of-order entry can't corrupt the table.
 
 ### Change how many positions score
-Edit the `scoring.points` array on the `config/season` document (Firebase console →
-Firestore Database → Data — same as the weight-penalty settings above, no Editor form
-for this one). Fewer entries = fewer paying positions. Want everyone who shows up to
-score? Make the array longer. Example (top-5 only):
+Edit `scoring.points`. Fewer entries = fewer paying positions. Want everyone who shows up
+to score? Make the array longer. Example (top-5 only):
 ```json
 "points": [10, 6, 4, 2, 1]
 ```
@@ -192,22 +186,29 @@ Open the site and click **Editor**.
   you to use an allowlisted account instead; ask whoever manages the project to add you
   (see [The Firebase project](#the-firebase-project) below).
 - Three sections once you're in — Drivers, Tracks, Races — each with a form (matching
-  the site's look) and a list of what's already there.
+  the site's look) and a list of what's already there, with Edit/Delete on every item.
 - **Saved = live, everywhere, immediately.** There's no export/import/publish step —
   hitting Save writes straight to Firestore, and every open copy of the site (yours,
-  a friend's, on any device) updates within moments.
-- **A driver profile can only be edited by whoever created it.** The first time you
-  save a driver, you become its `ownerEmail`. After that, the Edit/Delete buttons for
-  that driver only show up for you — everyone else sees "Owned by you@email.com"
-  instead. This stops one person from editing someone else's stats/photo/bio. Tracks
-  and races aren't owned by anyone — any allowlisted person can edit those, since
-  they're shared (someone has to log everyone's results after a race).
+  a friend's, on any device) updates within moments. This also means two people editing
+  the same thing at once is a real possibility (last write wins) — rare for a small
+  group, but worth knowing.
 - **Driver avatars are a picker, not an upload** — see [Driver avatars](#add-a-driver)
   above. **Track layout drawings** still need a file: either upload one (it gets
   embedded directly in that track's document, no separate file to manage) or point at
   a path you're keeping in `assets/tracks/` yourself.
 - Deleting a driver/track/layout that's still used by a race will ask you to confirm
   and then cleans up the reference for you rather than leaving something dangling.
+
+## Backup & restore
+
+The export bar at the bottom of the Editor:
+- **Download backup (season.json)** — always available, even signed out. Snapshots
+  everything currently in Firestore into a `season.json` file, in the same shape
+  described above. Good for an occasional off-site backup.
+- **Restore from backup…** — signed in only. Loads a `season.json` file (one you
+  downloaded earlier, or hand-wrote) and batch-writes its drivers/tracks/rounds/config
+  into Firestore. Useful for bulk-loading an initial roster in one shot, or recovering
+  from a mistake.
 
 ## The Firebase project
 
@@ -217,10 +218,9 @@ the repo and need to stay in sync with each other and with the Firebase console:
 - **`assets/js/firebase-config.js`** — the project's web config (not secret) and
   `EDITOR_ALLOWLIST`, a client-side copy of who can edit, used only to drive the
   Editor's UI (show/hide forms).
-- **`firestore.rules`** — the actual security boundary. Public read; write to
-  tracks/races/config requires being on the allowlist; write to a *driver* additionally
-  requires being that driver's `ownerEmail` (or the driver being unclaimed). Paste this
-  into the Firebase console under **Firestore Database → Rules** whenever it changes.
+- **`firestore.rules`** — the actual security boundary. Public read, write restricted
+  to the same email list, enforced server-side. Paste this into the Firebase console
+  under **Firestore Database → Rules** whenever it changes.
 
 To add or remove an editor: add/remove their Google account email in **both** files,
 then republish `firestore.rules` in the console.
@@ -272,4 +272,5 @@ assets/js/editor.js           Editor tab logic (forms, Firestore writes, auth ga
 assets/drivers/               driver avatars + manifest.json (the Editor's picker gallery)
 assets/tracks/                track layout drawings — drop scans/photos here
 firestore.rules               security rules (the real access control)
+data/season.json              optional backup/seed format — not read at runtime
 ```
