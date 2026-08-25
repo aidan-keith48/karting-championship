@@ -24,5 +24,6 @@ export const EDITOR_ALLOWLIST = [
   "mzshaik1@gmail.com",
   "daiyaanmanique1@gmail.com",
   "mohamadroshan786@gmail.com",
-  "moimathapelo24@gmail.com",
+  "moimathapelo24@gmail.com",,
+  "ryanAnthonyTheGreat42@gmail.com"
 ];
